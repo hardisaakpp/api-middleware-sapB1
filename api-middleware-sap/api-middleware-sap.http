@@ -1,6 +1,0 @@
-@api_middleware_sap_HostAddress = http://localhost:5243
-
-GET {{api_middleware_sap_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###
