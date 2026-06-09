@@ -41,7 +41,9 @@ try
                 shared: true);
 
         if (isDev)
+        {
             config.WriteTo.Console(formatter);
+        }
     });
 
     // API versioning
@@ -101,7 +103,9 @@ try
         opts.EnrichDiagnosticContext = (diag, ctx) =>
         {
             if (ctx.Items.TryGetValue("X-Correlation-Id", out var id))
+            {
                 diag.Set("CorrelationId", id?.ToString());
+            }
         };
     });
     app.UseMiddleware<GlobalExceptionMiddleware>();
@@ -113,7 +117,9 @@ try
     }
 
     if (!app.Environment.IsDevelopment())
+    {
         app.UseHttpsRedirection();
+    }
     app.UseAuthorization();
     app.MapControllers();
 

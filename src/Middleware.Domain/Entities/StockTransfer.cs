@@ -24,7 +24,10 @@ public sealed class StockTransfer
         ArgumentException.ThrowIfNullOrWhiteSpace(fromWarehouse);
         ArgumentException.ThrowIfNullOrWhiteSpace(toWarehouse);
         ArgumentNullException.ThrowIfNull(lines);
-        if (lines.Count == 0) throw new ArgumentException("At least one line is required.", nameof(lines));
+        if (lines.Count == 0)
+        {
+            throw new ArgumentException("At least one line is required.", nameof(lines));
+        }
 
         return new StockTransfer
         {

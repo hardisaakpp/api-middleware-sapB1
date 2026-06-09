@@ -31,7 +31,9 @@ public sealed class PurchaseOrdersController : ControllerBase
     {
         var result = await _getUseCase.ExecuteAsync(new GetPurchaseOrderRequest(docEntry), cancellationToken);
         if (result is null)
+        {
             return NotFound();
+        }
         return Ok(result);
     }
 

@@ -1,3 +1,5 @@
+using System.Net.Security;
+using System.Security.Authentication;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -12,6 +14,20 @@ namespace Middleware.Infrastructure;
 
 public static class DependencyInjection
 {
+    // SAP B1 Service Layer uses a self-signed certificate and may negotiate older TLS versions.
+    // SocketsHttpHandler gives us full control over TLS on .NET 8 (WinHttp-based HttpClientHandler
+    // does not honour RemoteCertificateValidationCallback for handshake-level failures).
+    private static SocketsHttpHandler BuildSapHandler() => new()
+    {
+        SslOptions = new SslClientAuthenticationOptions
+        {
+            RemoteCertificateValidationCallback = (_, _, _, _) => true,
+#pragma warning disable SYSLIB0039 // TLS 1.0/1.1 deprecated but required for legacy SAP B1 servers
+            EnabledSslProtocols = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12 | SslProtocols.Tls13
+#pragma warning restore SYSLIB0039
+        }
+    };
+
     public static IServiceCollection AddInfrastructure(
         this IServiceCollection services,
         IConfiguration configuration)
@@ -20,13 +36,13 @@ public static class DependencyInjection
         services.Configure<SapSettings>(configuration.GetSection(SapSettings.SectionName));
         services.Configure<SqlSettings>(configuration.GetSection(SqlSettings.SectionName));
 
-        // Named HttpClient for SAP login (used by the Singleton SapSessionManager)
         services.AddHttpClient("SapLogin", (sp, client) =>
         {
             var settings = sp.GetRequiredService<IOptions<SapSettings>>().Value;
             client.BaseAddress = new Uri(settings.BaseUrl);
             client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
-        });
+        })
+        .ConfigurePrimaryHttpMessageHandler(BuildSapHandler);
 
         // Typed HttpClient for all other SAP calls, with full resilience pipeline
         services.AddHttpClient<ISapServiceLayerClient, SapServiceLayerClient>((sp, client) =>
@@ -36,6 +52,7 @@ public static class DependencyInjection
             // Outer timeout > inner pipeline timeout so the pipeline's timeout policy fires first
             client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds + 10);
         })
+        .ConfigurePrimaryHttpMessageHandler(BuildSapHandler)
         .AddSapResiliencePipeline();
 
         // Singletons: shared across all requests

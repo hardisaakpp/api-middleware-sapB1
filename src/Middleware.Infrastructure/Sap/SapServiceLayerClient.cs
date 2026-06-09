@@ -26,10 +26,14 @@ internal sealed class SapServiceLayerClient : ISapServiceLayerClient
         using var request = new HttpRequestMessage(method, relativeUrl);
 
         if (!string.IsNullOrEmpty(sessionToken))
+        {
             request.Headers.Add("Cookie", $"B1SESSION={sessionToken}");
+        }
 
         if (body is not null)
+        {
             request.Content = new StringContent(body, Encoding.UTF8, MediaTypeNames.Application.Json);
+        }
 
         _logger.LogDebug("SAP → {Method} {Url}", method.Method, relativeUrl);
 

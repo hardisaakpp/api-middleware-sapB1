@@ -19,7 +19,11 @@ public sealed class GoodsReceipt
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vendorCode);
         ArgumentNullException.ThrowIfNull(lines);
-        if (lines.Count == 0) throw new ArgumentException("At least one line is required.", nameof(lines));
+
+        if (lines.Count == 0)
+        {
+            throw new ArgumentException("At least one line is required.", nameof(lines));
+        }
 
         return new GoodsReceipt
         {

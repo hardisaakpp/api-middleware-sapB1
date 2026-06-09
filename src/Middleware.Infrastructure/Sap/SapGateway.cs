@@ -179,17 +179,17 @@ internal sealed class SapGateway : ISapGateway
 
         int RequiredInt(JsonElement el, string field, string ctx)
         {
-            if (el.TryGetProperty(field, out var p) && p.TryGetInt32(out var v)) return v;
+            if (el.TryGetProperty(field, out var p) && p.TryGetInt32(out var v)) { return v; }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
         string RequiredString(JsonElement el, string field, string ctx)
         {
-            if (el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String) return p.GetString()!;
+            if (el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String) { return p.GetString()!; }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
         decimal RequiredDecimal(JsonElement el, string field, string ctx)
         {
-            if (el.TryGetProperty(field, out var p) && p.TryGetDecimal(out var v)) return v;
+            if (el.TryGetProperty(field, out var p) && p.TryGetDecimal(out var v)) { return v; }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
 
@@ -269,10 +269,14 @@ internal sealed class SapGateway : ISapGateway
         var root = doc.RootElement;
 
         if (!root.TryGetProperty("DocEntry", out var docEntryEl) || !docEntryEl.TryGetInt32(out var docEntry))
+        {
             throw new SapResponseException("SAP no devolvió el campo 'DocEntry' en la respuesta de creación del documento");
+        }
 
         if (!root.TryGetProperty("DocNum", out var docNumEl) || !docNumEl.TryGetInt32(out var docNum))
+        {
             throw new SapResponseException("SAP no devolvió el campo 'DocNum' en la respuesta de creación del documento");
+        }
 
         return new DocumentCreatedResult(docEntry, docNum);
     }

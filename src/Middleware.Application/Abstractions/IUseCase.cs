@@ -2,5 +2,5 @@ namespace Middleware.Application.Abstractions;
 
 public interface IUseCase<TRequest, TResponse>
 {
-    Task<TResponse> ExecuteAsync(TRequest request, CancellationToken cancellationToken = default);
+    public Task<TResponse> ExecuteAsync(TRequest request, CancellationToken cancellationToken = default);
 }

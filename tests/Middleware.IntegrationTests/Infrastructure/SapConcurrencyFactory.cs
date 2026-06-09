@@ -44,14 +44,20 @@ internal sealed class SapConcurrencyFactory : WebApplicationFactory<Program>
             var sapClientDescriptor = services.SingleOrDefault(
                 d => d.ServiceType == typeof(ISapServiceLayerClient));
             if (sapClientDescriptor is not null)
+            {
                 services.Remove(sapClientDescriptor);
+            }
+
             services.AddSingleton<ISapServiceLayerClient>(_ => FakeClient);
 
             // Replace ISapSessionManager with a stub — we are not testing session logic here.
             var sessionDescriptor = services.SingleOrDefault(
                 d => d.ServiceType == typeof(ISapSessionManager));
             if (sessionDescriptor is not null)
+            {
                 services.Remove(sessionDescriptor);
+            }
+
             services.AddSingleton<ISapSessionManager>(_ => new StubSessionManager());
         });
     }

@@ -4,7 +4,7 @@ namespace Middleware.Infrastructure.Sap;
 //       Registered as a typed HttpClient; Polly resilience pipeline applied at IHttpClientBuilder registration.
 public interface ISapServiceLayerClient
 {
-    Task<string> SendAsync(
+    public Task<string> SendAsync(
         HttpMethod method,
         string relativeUrl,
         string? body,
