@@ -259,8 +259,7 @@ Soporta dos entornos (`Production` / `Test`) y dos tipos de depósito (`MT` / `M
     {
       "itemCode": "ITEM-001",
       "quantity": 20.0,
-      "warehouseCode": "WH01",
-      "accountCode": "4010001"
+      "warehouseCode": "WH01"
     }
   ]
 }
@@ -301,8 +300,7 @@ Mismo cuerpo que Depósitos sin los campos `type` y `environment`.
     {
       "itemCode": "ITEM-001",
       "quantity": 3.0,
-      "warehouseCode": "WH01",
-      "accountCode": "5010001"
+      "warehouseCode": "WH01"
     }
   ]
 }
@@ -316,6 +314,31 @@ Mismo cuerpo que Depósitos sin los campos `type` y `environment`.
   "docNum": 412
 }
 ```
+
+---
+
+## Stock disponible (SQL Server)
+
+### GET /stock/available — *pendiente de implementar*
+
+> **Estado**: la capa de infraestructura (`SqlRepository.GetAvailableStockAsync`) y la interfaz de aplicación (`ISqlRepository`) están implementadas, pero el use case y el controller aún no existen. Este endpoint no está disponible en la versión actual.
+
+Cuando se implemente, consultará el stock disponible por ítem y almacén directamente contra SQL Server (stored procedure `sp_GetAvailableStock`), sin pasar por SAP Service Layer.
+
+**Parámetros de query previstos**
+
+| Parámetro | Tipo | Descripción |
+|---|---|---|
+| `itemCode` | string | Código del artículo |
+| `warehouseCode` | string | Código del almacén |
+
+**Checklist para completar la implementación**
+
+- [ ] Use case `GetAvailableStockUseCase` en `Application/UseCases/Stock/`
+- [ ] Controller `StockController` en `Api/Controllers/V1/`
+- [ ] Request DTO con validación (NotEmpty en ambos parámetros)
+- [ ] Test de integración con mock de `ISqlRepository`
+- [ ] Registrar el use case en `Application/DependencyInjection.cs`
 
 ---
 

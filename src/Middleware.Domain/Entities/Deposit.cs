@@ -47,6 +47,5 @@ public sealed class Deposit
 public sealed record DepositLine(
     string ItemCode,
     decimal Quantity,
-    string WarehouseCode,
-    string? AccountCode = null
+    string WarehouseCode
 );

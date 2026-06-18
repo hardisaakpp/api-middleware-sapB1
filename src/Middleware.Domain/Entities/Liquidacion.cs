@@ -39,6 +39,5 @@ public sealed class Liquidacion
 public sealed record LiquidacionLine(
     string ItemCode,
     decimal Quantity,
-    string WarehouseCode,
-    string? AccountCode = null
+    string WarehouseCode
 );

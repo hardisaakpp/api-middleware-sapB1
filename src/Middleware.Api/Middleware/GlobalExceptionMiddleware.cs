@@ -3,6 +3,8 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Middleware.Infrastructure.Sap;
+using Polly.CircuitBreaker;
+using Polly.Timeout;
 
 namespace Middleware.Api.Middleware;
 
@@ -56,6 +58,9 @@ public sealed class GlobalExceptionMiddleware
 
         var (statusCode, title) = ex switch
         {
+            SapThrottleException               => (HttpStatusCode.ServiceUnavailable, "SAP service busy"),
+            BrokenCircuitException             => (HttpStatusCode.ServiceUnavailable, "SAP circuit breaker open"),
+            TimeoutRejectedException           => (HttpStatusCode.GatewayTimeout, "SAP response timeout"),
             OperationCanceledException         => (HttpStatusCode.ServiceUnavailable, "Request cancelled"),
             ArgumentException                  => (HttpStatusCode.BadRequest, "Invalid request"),
             SapResponseException               => (HttpStatusCode.BadGateway, "SAP returned an unexpected response"),

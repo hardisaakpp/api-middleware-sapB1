@@ -11,15 +11,44 @@ namespace Middleware.Api.Controllers.V1;
 [Route("api/v{version:apiVersion}/purchase-orders")]
 public sealed class PurchaseOrdersController : ControllerBase
 {
+    private readonly CreatePurchaseOrderUseCase _createUseCase;
     private readonly GetPurchaseOrderUseCase _getUseCase;
+    private readonly GetPurchaseOrdersUseCase _getListUseCase;
     private readonly UpdatePurchaseOrderUseCase _updateUseCase;
 
     public PurchaseOrdersController(
+        CreatePurchaseOrderUseCase createUseCase,
         GetPurchaseOrderUseCase getUseCase,
+        GetPurchaseOrdersUseCase getListUseCase,
         UpdatePurchaseOrderUseCase updateUseCase)
     {
+        _createUseCase = createUseCase;
         _getUseCase = getUseCase;
+        _getListUseCase = getListUseCase;
         _updateUseCase = updateUseCase;
+    }
+
+    [HttpGet]
+    [ProducesResponseType(typeof(PurchaseOrdersListResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<PurchaseOrdersListResponse>> GetList(
+        [FromQuery] int top = 20,
+        [FromQuery] int skip = 0,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _getListUseCase.ExecuteAsync(new GetPurchaseOrdersRequest(top, skip), cancellationToken);
+        return Ok(result);
+    }
+
+    [HttpPost]
+    [ProducesResponseType(typeof(CreatePurchaseOrderResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<CreatePurchaseOrderResponse>> Create(
+        [FromBody] CreatePurchaseOrderRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _createUseCase.ExecuteAsync(request, cancellationToken);
+        return CreatedAtAction(nameof(Get), new { docEntry = result.DocEntry }, result);
     }
 
     [HttpGet("{docEntry:int}")]

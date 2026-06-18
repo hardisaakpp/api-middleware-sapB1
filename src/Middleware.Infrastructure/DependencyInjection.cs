@@ -65,6 +65,7 @@ public static class DependencyInjection
 
         // SQL
         services.AddScoped<ISqlRepository, SqlRepository>();
+        services.AddScoped<IApiLogRepository, ApiLogRepository>();
 
         // Observability
         services.AddObservability(configuration);

@@ -93,6 +93,7 @@ try
 
     // Pipeline order matters: correlation ID must run first so all subsequent middleware has the ID
     app.UseMiddleware<CorrelationIdMiddleware>();
+    app.UseMiddleware<ApiLogMiddleware>();
     app.UseSerilogRequestLogging(opts =>
     {
         opts.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0}ms";
