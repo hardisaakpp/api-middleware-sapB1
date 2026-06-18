@@ -67,8 +67,8 @@ try
             opt.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
         });
 
-    // Swagger (dev only — avoids assembly scanning overhead in production)
-    if (builder.Environment.IsDevelopment())
+    // Swagger (dev and test only — avoids assembly scanning overhead in production)
+    if (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Test"))
     {
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen(opt =>
@@ -111,7 +111,7 @@ try
     });
     app.UseMiddleware<GlobalExceptionMiddleware>();
 
-    if (app.Environment.IsDevelopment())
+    if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Test"))
     {
         app.UseSwagger();
         app.UseSwaggerUI(opt => opt.SwaggerEndpoint("/swagger/v1/swagger.json", "SAP Middleware API v1"));
