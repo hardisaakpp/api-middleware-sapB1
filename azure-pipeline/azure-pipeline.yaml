@@ -1,0 +1,76 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+# 1. Apuntamos a tu infraestructura on-premise
+pool:
+  name: 'Test-Agents'
+
+variables:
+  buildConfiguration: 'Release'
+
+steps:
+# 2. Instalación del SDK de .NET 8 en el agente local
+- task: UseDotNet@2
+  displayName: 'Setup .NET 8.0 SDK'
+  inputs:
+    packageType: 'sdk'
+    version: '8.0.x'
+
+# 3. Restauración de paquetes NuGet
+- task: DotNetCoreCLI@2
+  displayName: 'Restore dependencies'
+  inputs:
+    command: 'restore'
+    projects: '**/*.csproj'
+
+# 4. Compilación de la solución (Clean Architecture completa)
+- task: DotNetCoreCLI@2
+  displayName: 'Build solution'
+  inputs:
+    command: 'build'
+    projects: '**/*.csproj'
+    arguments: '--configuration $(buildConfiguration) --no-restore'
+
+# 5. Ejecución de Pruebas Unitarias (Capa de Aplicación y Dominio)
+- task: DotNetCoreCLI@2
+  displayName: 'Run Unit Tests'
+  inputs:
+    command: 'test'
+    projects: 'tests/Middleware.UnitTests/Middleware.UnitTests.csproj'
+    arguments: '--configuration $(buildConfiguration) --no-build'
+    publishTestResults: true
+
+# 6. Ejecución de Pruebas de Integración (SQL, SapGateway simulado)
+- task: DotNetCoreCLI@2
+  displayName: 'Run Integration Tests'
+  inputs:
+    command: 'test'
+    projects: 'tests/Middleware.IntegrationTests/Middleware.IntegrationTests.csproj'
+    arguments: '--configuration $(buildConfiguration) --no-build'
+    publishTestResults: true
+
+# ----------------------------------------------------------------------
+# EMPAQUETADO TRADICIONAL (SIN DOCKER)
+# ----------------------------------------------------------------------
+
+# 7. Publicación de los binarios (DLLs)
+- task: DotNetCoreCLI@2
+  displayName: 'Publish API Project'
+  inputs:
+    command: 'publish'
+    publishWebProjects: false
+    projects: 'src/Middleware.Api/Middleware.Api.csproj'
+    # Compila el código final en la carpeta temporal de artefactos de Azure DevOps
+    arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/api-middleware-sap --no-build'
+    zipAfterPublish: true # Empaqueta las DLLs en un .zip para un despliegue tradicional más limpio
+
+# 8. Subida del artefacto a la nube para la fase de Release (CD)
+- task: PublishPipelineArtifact@1
+  displayName: 'Upload Artifact to Azure DevOps'
+  inputs:
+    targetPath: '$(Build.ArtifactStagingDirectory)/api-middleware-sap'
+    artifact: 'api-middleware-sap-drop'
+    publishLocation: 'pipeline'
