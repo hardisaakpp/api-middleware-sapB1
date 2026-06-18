@@ -39,7 +39,7 @@ public static class DependencyInjection
         services.AddHttpClient("SapLogin", (sp, client) =>
         {
             var settings = sp.GetRequiredService<IOptions<SapSettings>>().Value;
-            client.BaseAddress = new Uri(settings.BaseUrl);
+            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/');
             client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
         })
         .ConfigurePrimaryHttpMessageHandler(BuildSapHandler);
@@ -48,7 +48,7 @@ public static class DependencyInjection
         services.AddHttpClient<ISapServiceLayerClient, SapServiceLayerClient>((sp, client) =>
         {
             var settings = sp.GetRequiredService<IOptions<SapSettings>>().Value;
-            client.BaseAddress = new Uri(settings.BaseUrl);
+            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/');
             // Outer timeout > inner pipeline timeout so the pipeline's timeout policy fires first
             client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds + 10);
         })
