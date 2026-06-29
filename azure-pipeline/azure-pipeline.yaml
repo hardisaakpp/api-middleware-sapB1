@@ -2,33 +2,62 @@ trigger:
   branches:
     include:
       - main
-      - develop
+      - test
       - ci/*
+      - feature/*
+      - fix/*
+      - bugfix/*
+      - hotfix/*
 
 pool:
   name: 'Test-Agents'
 
 variables:
-  buildConfiguration: 'Release'
-  # La IP oficial para que todos los servidores (Test y Prod) encuentren la imagen
-  imageName: '210.17.1.53:5000/api-middleware-sap'
+  # Vinculamos el grupo de variables seguro para la autenticación en ACR
+  - group: acr-credentials
+  
+  - name: buildConfiguration
+    value: 'Release'
+    
+  # Host y ruta oficial hacia tu Azure Container Registry
+  - name: registryHost
+    value: 'dockermg-g9hrgcc4etdrh8eg.azurecr.io'
+  - name: imageName
+    value: 'dockermg-g9hrgcc4etdrh8eg.azurecr.io/api-middleware-sap'
+
+  # Lógica Declarativa de Prefijos Dinámicos por Rama
+  - ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+    - name: envTag
+      value: 'prod-latest'
+    - name: uniqueTag
+      value: 'prod-$(Build.BuildId)'
+  - ${{ elseif eq(variables['Build.SourceBranchName'], 'develop') }}:
+    - name: envTag
+      value: 'test-latest'
+    - name: uniqueTag
+      value: 'test-$(Build.BuildId)'
+  - ${{ else }}:
+    - name: envTag
+      value: 'none'
+    - name: uniqueTag
+      value: 'none'
 
 steps:
-# 2. Instalación del SDK de .NET 8 en el agente local
+# 1. Instalación del SDK de .NET 8 en el agente local
 - task: UseDotNet@2
   displayName: 'Setup .NET 8.0 SDK'
   inputs:
     packageType: 'sdk'
     version: '8.0.x'
 
-# 3. Restauración de paquetes NuGet
+# 2. Restauración de paquetes NuGet
 - task: DotNetCoreCLI@2
   displayName: 'Restore dependencies'
   inputs:
     command: 'restore'
     projects: '**/*.csproj'
 
-# 4. Compilación de la solución
+# 3. Compilación de la solución
 - task: DotNetCoreCLI@2
   displayName: 'Build solution'
   inputs:
@@ -36,7 +65,7 @@ steps:
     projects: '**/*.csproj'
     arguments: '--configuration $(buildConfiguration) --no-restore'
 
-# 5. Ejecución de Pruebas Unitarias
+# 4. Ejecución de Pruebas Unitarias
 - task: DotNetCoreCLI@2
   displayName: 'Run Unit Tests'
   inputs:
@@ -45,7 +74,7 @@ steps:
     arguments: '--configuration $(buildConfiguration) --no-build'
     publishTestResults: true
 
-# 6. Ejecución de Pruebas de Integración (Excluyendo la inestable)
+# 5. Ejecución de Pruebas de Integración (Excluyendo la inestable)
 - task: DotNetCoreCLI@2
   displayName: 'Run Integration Tests'
   inputs:
@@ -55,15 +84,20 @@ steps:
     publishTestResults: true
 
 # ----------------------------------------------------------------------
-# EMPAQUETADO DOCKER (Reemplaza al ZIP anterior)
+# EMPAQUETADO DOCKER Y PUBLICACIÓN EN ACR
 # ----------------------------------------------------------------------
-- task: CmdLine@2
-  displayName: 'Build and Push Docker Image'
-  inputs:
-    script: |
-      echo "1. Construyendo la imagen de Docker..."
-      docker build -t $(imageName):$(Build.BuildId) -t $(imageName):test-latest -f Dockerfile .
-      
-      echo "2. Subiendo la imagen al registro local..."
-      docker push $(imageName):$(Build.BuildId)
-      docker push $(imageName):test-latest
+- script: |
+    echo "0. Autenticando contra el registro de Azure ($(registryHost))..."
+    echo "$(acrPassword)" | docker login $(registryHost) -u "$(acrUsername)" --password-stdin
+
+    echo "1. Construyendo la imagen de Docker para api-middleware-sap ($(envTag))..."
+    docker build -f Dockerfile \
+      -t $(imageName):$(uniqueTag) \
+      -t $(imageName):$(envTag) .
+    
+    echo "2. Subiendo imágenes al registro corporativo de Azure..."
+    docker push $(imageName):$(uniqueTag)
+    docker push $(imageName):$(envTag)
+  displayName: 'Build and Push Docker Image to ACR'
+  # Candado: Solo ejecuta Docker si las pruebas pasaron Y la rama es main o develop
+  condition: and(succeeded(), ne(variables.envTag, 'none'))
