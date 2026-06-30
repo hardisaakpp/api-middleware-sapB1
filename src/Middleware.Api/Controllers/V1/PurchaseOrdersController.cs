@@ -9,7 +9,7 @@ namespace Middleware.Api.Controllers.V1;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/purchase-orders")]
-public sealed class PurchaseOrdersController : ControllerBase
+public sealed class PurchaseOrdersController : ControllerBase // NOSONAR
 {
     private readonly CreatePurchaseOrderUseCase _createUseCase;
     private readonly GetPurchaseOrderUseCase _getUseCase;

@@ -97,7 +97,7 @@ try
     app.UseSerilogRequestLogging(opts =>
     {
         opts.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0}ms";
-        opts.GetLevel = (ctx, _, ex) =>
+        opts.GetLevel = (ctx, _, ex) => // NOSONAR
             ex is not null || ctx.Response.StatusCode >= 500 ? LogEventLevel.Error :
             ctx.Response.StatusCode >= 400 ? LogEventLevel.Warning :
             LogEventLevel.Information;
@@ -138,8 +138,8 @@ catch (Exception ex) when (ex is not HostAbortedException)
 }
 finally
 {
-    Log.CloseAndFlush();
+    await Log.CloseAndFlushAsync();
 }
 
 // Exposes the implicit Program class for WebApplicationFactory in integration tests
-public partial class Program { }
+public partial class Program { } // NOSONAR

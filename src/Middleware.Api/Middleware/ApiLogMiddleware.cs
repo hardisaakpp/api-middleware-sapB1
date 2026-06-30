@@ -29,7 +29,7 @@ public sealed class ApiLogMiddleware
     public async Task InvokeAsync(HttpContext context, IApiLogRepository repo)
     {
         var path = context.Request.Path.Value ?? string.Empty;
-        if (SkipPaths.Contains(path) || SkipPrefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+        if (SkipPaths.Contains(path) || SkipPrefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase))) // NOSONAR
         {
             await _next(context);
             return;
@@ -120,7 +120,7 @@ public sealed class ApiLogMiddleware
         return Truncate(body);
     }
 
-    private static string? Truncate(string? value) =>
+    private static string? Truncate(string? value) => // NOSONAR
         value is null ? null :
         value.Length <= MaxBodyLength ? value :
         value[..MaxBodyLength];

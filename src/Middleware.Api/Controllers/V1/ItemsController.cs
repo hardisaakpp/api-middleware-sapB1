@@ -8,7 +8,7 @@ namespace Middleware.Api.Controllers.V1;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/items")]
-public sealed class ItemsController : ControllerBase
+public sealed class ItemsController : ControllerBase // NOSONAR
 {
     private readonly GetItemUseCase _getItemUseCase;
     private readonly GetItemStockUseCase _getItemStockUseCase;

@@ -14,11 +14,11 @@ COPY ["src/Middleware.Infrastructure/Middleware.Infrastructure.csproj", "src/Mid
 RUN dotnet restore "./src/Middleware.Api/Middleware.Api.csproj"
 COPY . .
 WORKDIR "/src/src/Middleware.Api"
-RUN dotnet build "./Middleware.Api.csproj" -c $BUILD_CONFIGURATION -o /app/build
+RUN dotnet build "./Middleware.Api.csproj" -c "$BUILD_CONFIGURATION" -o /app/build
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./Middleware.Api.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "./Middleware.Api.csproj" -c "$BUILD_CONFIGURATION" -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app

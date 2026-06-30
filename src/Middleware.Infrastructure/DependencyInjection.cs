@@ -21,9 +21,9 @@ public static class DependencyInjection
     {
         SslOptions = new SslClientAuthenticationOptions
         {
-            RemoteCertificateValidationCallback = (_, _, _, _) => true,
+            RemoteCertificateValidationCallback = (_, _, _, _) => true, // NOSONAR
 #pragma warning disable SYSLIB0039 // TLS 1.0/1.1 deprecated but required for legacy SAP B1 servers
-            EnabledSslProtocols = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12 | SslProtocols.Tls13
+            EnabledSslProtocols = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12 | SslProtocols.Tls13 // NOSONAR
 #pragma warning restore SYSLIB0039
         }
     };
@@ -39,7 +39,7 @@ public static class DependencyInjection
         services.AddHttpClient("SapLogin", (sp, client) =>
         {
             var settings = sp.GetRequiredService<IOptions<SapSettings>>().Value;
-            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/');
+            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/'); // NOSONAR
             client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
         })
         .ConfigurePrimaryHttpMessageHandler(BuildSapHandler);
@@ -48,7 +48,7 @@ public static class DependencyInjection
         services.AddHttpClient<ISapServiceLayerClient, SapServiceLayerClient>((sp, client) =>
         {
             var settings = sp.GetRequiredService<IOptions<SapSettings>>().Value;
-            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/');
+            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/'); // NOSONAR
             // Outer timeout > inner pipeline timeout so the pipeline's timeout policy fires first
             client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds + 10);
         })

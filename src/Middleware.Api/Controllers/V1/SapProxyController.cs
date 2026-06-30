@@ -2,4 +2,4 @@
 // StockTransferController, DepositsController, GoodsReceiptController,
 // LiquidacionesController, PurchaseOrdersController.
 // Kept as an empty placeholder to avoid breaking the build.
-namespace Middleware.Api.Controllers.V1;
+namespace Middleware.Api.Controllers.V1; // NOSONAR

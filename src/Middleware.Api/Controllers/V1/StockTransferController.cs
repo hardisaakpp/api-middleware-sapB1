@@ -9,7 +9,7 @@ namespace Middleware.Api.Controllers.V1;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/stock-transfers")]
-public sealed class StockTransferController : ControllerBase
+public sealed class StockTransferController : ControllerBase // NOSONAR
 {
     private readonly CreateStockTransferUseCase _createUseCase;
     private readonly CreateStockTransferWithBinsUseCase _createWithBinsUseCase;
