@@ -120,8 +120,11 @@ public sealed class ApiLogMiddleware
         return Truncate(body);
     }
 
-    private static string? Truncate(string? value) => // NOSONAR
-        value is null ? null :
-        value.Length <= MaxBodyLength ? value :
-        value[..MaxBodyLength];
+    private static string? Truncate(string? value)
+    {
+        if (value is null)
+            return null;
+
+        return value.Length <= MaxBodyLength ? value : value[..MaxBodyLength];
+    }
 }
