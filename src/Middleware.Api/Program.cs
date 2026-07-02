@@ -17,6 +17,8 @@ Log.Logger = new LoggerConfiguration()
 
 try
 {
+    DotNetEnv.Env.TraversePath().Load();
+
     var builder = WebApplication.CreateBuilder(args);
 
     // Structured logging with Serilog
