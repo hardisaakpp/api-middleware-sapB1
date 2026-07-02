@@ -10,7 +10,7 @@ trigger:
       - hotfix/*
 
 pool:
-  name: 'Test-Agents'
+  name: 'agents-srv-test'
 
 variables:
   # Vinculamos el grupo de variables seguro para la autenticación en ACR
