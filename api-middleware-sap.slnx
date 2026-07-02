@@ -1,3 +1,12 @@
 <Solution>
-  <Project Path="api-middleware-sap/api-middleware-sap.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/Middleware.Api/Middleware.Api.csproj" />
+    <Project Path="src/Middleware.Application/Middleware.Application.csproj" />
+    <Project Path="src/Middleware.Domain/Middleware.Domain.csproj" />
+    <Project Path="src/Middleware.Infrastructure/Middleware.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Middleware.IntegrationTests/Middleware.IntegrationTests.csproj" />
+    <Project Path="tests/Middleware.UnitTests/Middleware.UnitTests.csproj" />
+  </Folder>
 </Solution>

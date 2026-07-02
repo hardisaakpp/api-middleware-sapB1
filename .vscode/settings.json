@@ -1,0 +1,12 @@
+{
+  "files.associations": {
+    "**/logs/*.json": "jsonl"
+  },
+  "json.schemaDownload.enable": true,
+  "json.schemas": [
+    {
+      "fileMatch": ["**/xunit.runner.json"],
+      "url": "https://xunit.net/schema/current/xunit.runner.schema.json"
+    }
+  ]
+}

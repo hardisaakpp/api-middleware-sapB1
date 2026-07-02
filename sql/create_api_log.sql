@@ -1,0 +1,14 @@
+-- sc_middleware database
+-- La tabla dbo.api_log ya existe. Este script es solo referencia del esquema real.
+--
+-- Esquema existente:
+--   id           INT / BIGINT  IDENTITY PK
+--   endpoint     (método + path, ej: "PUT /api/stocktransfer/status")
+--   request      (query string o body resumido)
+--   response     (cuerpo de respuesta o mensaje de error)
+--   fecha        DATETIME2     DEFAULT GETDATE() / SYSDATETIME()
+--   usuario      (usuario autenticado, o "system")
+--   status_code  INT
+--   duracion_ms  INT
+--
+-- No ejecutar: la tabla ya existe en producción.
