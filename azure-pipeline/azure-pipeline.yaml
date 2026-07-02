@@ -31,7 +31,7 @@ variables:
       value: 'prod-latest'
     - name: uniqueTag
       value: 'prod-$(Build.BuildId)'
-  - ${{ elseif eq(variables['Build.SourceBranchName'], 'develop') }}:
+  - ${{ elseif eq(variables['Build.SourceBranchName'], 'test') }}:
     - name: envTag
       value: 'test-latest'
     - name: uniqueTag
