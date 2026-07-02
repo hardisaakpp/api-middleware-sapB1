@@ -10,7 +10,7 @@ trigger:
       - hotfix/*
 
 pool:
-  name: 'Test-Agents'
+  name: 'agents-srv-test'
 
 variables:
   # Vinculamos el grupo de variables seguro para la autenticación en ACR
@@ -31,7 +31,7 @@ variables:
       value: 'prod-latest'
     - name: uniqueTag
       value: 'prod-$(Build.BuildId)'
-  - ${{ elseif eq(variables['Build.SourceBranchName'], 'develop') }}:
+  - ${{ elseif eq(variables['Build.SourceBranchName'], 'test') }}:
     - name: envTag
       value: 'test-latest'
     - name: uniqueTag
