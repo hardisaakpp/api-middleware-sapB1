@@ -92,7 +92,9 @@ public sealed class ApiLogMiddleware
     private static async Task<string?> ReadRequestSummaryAsync(HttpRequest request)
     {
         if (request.QueryString.HasValue && request.ContentLength is null or 0)
+        {
             return Truncate(request.QueryString.Value);
+        }
 
         if (request.ContentLength > 0)
         {
@@ -109,10 +111,14 @@ public sealed class ApiLogMiddleware
     private static async Task<string?> ReadResponseSummaryAsync(MemoryStream buffer, int statusCode, string method, Exception? ex)
     {
         if (ex is not null)
+        {
             return Truncate(ex.Message);
+        }
 
         if (statusCode < 400 && method.Equals("GET", StringComparison.OrdinalIgnoreCase))
+        {
             return string.Empty;
+        }
 
         buffer.Position = 0;
         using var reader = new StreamReader(buffer, leaveOpen: true);
@@ -123,7 +129,9 @@ public sealed class ApiLogMiddleware
     private static string? Truncate(string? value)
     {
         if (value is null)
+        {
             return null;
+        }
 
         return value.Length <= MaxBodyLength ? value : value[..MaxBodyLength];
     }

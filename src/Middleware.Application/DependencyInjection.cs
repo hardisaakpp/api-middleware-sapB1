@@ -1,6 +1,8 @@
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
+using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
+using Middleware.Application.Jobs.Handlers;
 using Middleware.Application.UseCases.BusinessPartners;
 using Middleware.Application.UseCases.Deposits;
 using Middleware.Application.UseCases.GoodsReceipt;
@@ -30,6 +32,23 @@ public static class DependencyInjection
         services.AddScoped<GetItemStockUseCase>();
         services.AddScoped<GetBusinessPartnerUseCase>();
         services.AddScoped<GetInventoryTransferRequestsByCommentUseCase>();
+        services.AddScoped<UpdateInventoryTransferRequestStatusUseCase>();
+
+        services.AddScoped<IJobHandler, CreatePurchaseOrderJobHandler>();
+        services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();
+        services.AddScoped<IJobHandler, GetPurchaseOrderJobHandler>();
+        services.AddScoped<IJobHandler, GetPurchaseOrdersJobHandler>();
+        services.AddScoped<IJobHandler, CreateStockTransferJobHandler>();
+        services.AddScoped<IJobHandler, CreateStockTransferWithBinsJobHandler>();
+        services.AddScoped<IJobHandler, CreateStockTransferRequestJobHandler>();
+        services.AddScoped<IJobHandler, CreateDepositJobHandler>();
+        services.AddScoped<IJobHandler, CreateGoodsReceiptJobHandler>();
+        services.AddScoped<IJobHandler, CreateLiquidacionJobHandler>();
+        services.AddScoped<IJobHandler, GetBusinessPartnerJobHandler>();
+        services.AddScoped<IJobHandler, GetItemJobHandler>();
+        services.AddScoped<IJobHandler, GetItemStockJobHandler>();
+        services.AddScoped<IJobHandler, GetInventoryTransferRequestsByCommentJobHandler>();
+        services.AddScoped<IJobHandler, UpdateInventoryTransferRequestStatusJobHandler>();
 
         services.AddValidatorsFromAssemblyContaining<CreateStockTransferRequestValidator>(ServiceLifetime.Scoped);
 

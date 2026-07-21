@@ -19,7 +19,9 @@ internal sealed class SapThrottle
     {
         var acquired = await _semaphore.WaitAsync(_waitTimeout, ct);
         if (!acquired)
+        {
             throw new SapThrottleException("El servidor SAP está ocupado. Intente de nuevo en unos segundos.");
+        }
     }
 
     public void Release() => _semaphore.Release();

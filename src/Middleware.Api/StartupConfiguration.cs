@@ -69,7 +69,9 @@ internal static class StartupConfiguration
     public static void ConfigureSwagger(WebApplicationBuilder builder)
     {
         if (!IsSwaggerEnabled(builder.Environment))
+        {
             return;
+        }
 
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen(opt =>
@@ -117,7 +119,9 @@ internal static class StartupConfiguration
     private static LogEventLevel GetLogEventLevel(HttpContext ctx, Exception? ex)
     {
         if (ex is not null || ctx.Response.StatusCode >= 500)
+        {
             return LogEventLevel.Error;
+        }
 
         return ctx.Response.StatusCode >= 400 ? LogEventLevel.Warning : LogEventLevel.Information;
     }

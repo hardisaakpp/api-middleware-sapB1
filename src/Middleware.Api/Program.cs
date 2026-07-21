@@ -14,6 +14,12 @@ try
 {
     var builder = WebApplication.CreateBuilder(args);
 
+    // Local secrets layer, on top of appsettings.{Environment}.json — see docs/configuration.md
+    builder.Configuration.AddJsonFile(
+        $"appsettings.{builder.Environment.EnvironmentName}.local.json",
+        optional: true,
+        reloadOnChange: true);
+
     StartupConfiguration.ConfigureLogging(builder);
     StartupConfiguration.ConfigureApiVersioning(builder);
     StartupConfiguration.ConfigureControllers(builder);
