@@ -256,17 +256,26 @@ internal sealed class SapGateway : ISapGateway
 
         int RequiredInt(JsonElement el, string field, string ctx)
         {
-            if (el.TryGetProperty(field, out var p) && p.TryGetInt32(out var v)) { return v; }
+            if (el.TryGetProperty(field, out var p) && p.TryGetInt32(out var v))
+            {
+                return v;
+            }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
         string RequiredString(JsonElement el, string field, string ctx)
         {
-            if (el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String) { return p.GetString()!; }
+            if (el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String)
+            {
+                return p.GetString()!;
+            }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
         decimal RequiredDecimal(JsonElement el, string field, string ctx)
         {
-            if (el.TryGetProperty(field, out var p) && p.TryGetDecimal(out var v)) { return v; }
+            if (el.TryGetProperty(field, out var p) && p.TryGetDecimal(out var v))
+            {
+                return v;
+            }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
 
