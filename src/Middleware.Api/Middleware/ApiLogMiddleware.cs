@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Middleware.Api.Logging;
 using Middleware.Application.Abstractions;
 
 namespace Middleware.Api.Middleware;
@@ -17,16 +18,15 @@ public sealed class ApiLogMiddleware
     private const int MaxBodyLength = 2000;
 
     private readonly RequestDelegate _next;
-    private readonly ILogger<ApiLogMiddleware> _logger;
+    private readonly ApiLogQueue _queue;
 
-    public ApiLogMiddleware(RequestDelegate next, ILogger<ApiLogMiddleware> logger)
+    public ApiLogMiddleware(RequestDelegate next, ApiLogQueue queue)
     {
-        _next   = next;
-        _logger = logger;
+        _next  = next;
+        _queue = queue;
     }
 
-    // IApiLogRepository is scoped — injected per-request via method injection
-    public async Task InvokeAsync(HttpContext context, IApiLogRepository repo)
+    public async Task InvokeAsync(HttpContext context)
     {
         var path = context.Request.Path.Value ?? string.Empty;
         if (SkipPaths.Contains(path) || SkipPrefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
@@ -78,14 +78,9 @@ public sealed class ApiLogMiddleware
                 StatusCode: context.Response.StatusCode,
                 DurationMs: (int)sw.ElapsedMilliseconds);
 
-            try
-            {
-                await repo.InsertAsync(entry);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "ApiLog insert failed for {Endpoint}", endpoint);
-            }
+            // Persistir fuera del camino crítico del request — ver ApiLogBackgroundService.
+            // Encolar no bloquea: la respuesta al cliente no espera al INSERT en SQL.
+            _queue.Enqueue(entry);
         }
     }
 

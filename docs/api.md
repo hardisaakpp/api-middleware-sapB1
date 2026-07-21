@@ -1,6 +1,6 @@
 # Referencia de API
 
-Base URL: `http://localhost:5250/api/v1`  
+Base URL: `http://localhost:8011/api/v1`  
 Todos los cuerpos de request y response son `application/json`.  
 Todos los responses de error siguen el formato `ProblemDetails` (RFC 7807).
 
@@ -314,6 +314,289 @@ Mismo cuerpo que Depósitos sin los campos `type` y `environment`.
   "docNum": 412
 }
 ```
+
+---
+
+## Artículos (Items)
+
+### GET /items/{itemCode}
+
+Obtiene la ficha del artículo desde SAP, incluyendo los campos que consume la búsqueda
+por SKU exacto (pack, grupo y proveedor preferido).
+
+**Respuesta exitosa — 200 OK**
+
+```json
+{
+  "itemCode": "R190.1012",
+  "itemName": "CASUAL C. CASUAL LISA DISEÑO SURTIDO X1",
+  "inventoryUoM": "UNIDAD",
+  "onHand": 822.0,
+  "purchaseItem": true,
+  "salesItem": true,
+  "inventoryItem": true,
+  "valid": true,
+  "frozen": false,
+  "itemType": "itItems",
+  "packCode": "X1",
+  "groupCode": 103,
+  "groupName": "R-MEDIAS",
+  "preferredVendorCode": "P1790389219001"
+}
+```
+
+| Campo | Origen SL | Notas |
+|---|---|---|
+| `inventoryUoM` | `InventoryUOM` | Código de unidad de medida legible (ej. `"UNIDAD"`). **No** es `InventoryUoMEntry` (id numérico interno de SL, no legible) — error corregido el 2026-07-14, antes este campo siempre devolvía `null` |
+| `packCode` | `U_IXX_PACK` (UDF) | `null` si el ítem no lo tiene. Si la base no tiene el UDF, el middleware reintenta el `$select` sin él y devuelve `null` |
+| `groupCode` | `ItemsGroupCode` | `null` si SL no lo devuelve |
+| `groupName` | `ItemGroups.GroupName` | Resuelto vía cache en memoria del mapa código→nombre (TTL `Sap:ItemGroupsCacheMinutes`, default 360). `null` si el grupo no se puede resolver; siempre coherente con `groupCode` |
+| `preferredVendorCode` | `Mainsupplier` | `null` si el ítem no tiene proveedor preferido (`""` de SL se normaliza a `null`) |
+
+Los campos con valor `null` se omiten del JSON (política global de la API).
+
+**Códigos de error**: `404` si el `itemCode` no existe en SAP.
+
+---
+
+### POST /items/batch
+
+Ficha completa de hasta 100 artículos en **una sola llamada** (reemplaza N llamadas a
+`GET /items/{itemCode}`). Cada elemento de `items` es el mismo objeto que devuelve el
+endpoint individual (incluye `groupName`). Solo lectura e idempotente.
+
+**Cuerpo del request**
+
+```json
+{ "itemCodes": ["R215.810.NO", "780-2404174", "NO-EXISTE-123"] }
+```
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `itemCodes` | array | ✓ | 0 a 100 códigos, cada uno NotEmpty max 50 chars. Repetidos se deduplican. `[]` devuelve 200 con listas vacías |
+
+**Respuesta exitosa — 200 OK**
+
+```json
+{
+  "items": [
+    { "itemCode": "R215.810.NO", "itemName": "...", "groupCode": 103, "groupName": "R-MEDIAS", "...": "..." }
+  ],
+  "notFound": ["NO-EXISTE-123"]
+}
+```
+
+- Los códigos que no existen en SAP van en `notFound` — no provocan error del batch.
+- El **orden de `items` no está garantizado**; mapear por `itemCode`.
+- **Sin resultados parciales silenciosos**: si Service Layer falla a mitad del batch, el
+  request completo falla con problem-detail 5xx (`503` circuito abierto/throttle,
+  `504` timeout, `502` error de SL) para que el cliente haga fallback.
+- Internamente consulta SL en sub-chunks (`Validation:SapChunkSize`, paralelismo
+  `Validation:MaxParallelChunks`), transparente para el cliente.
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | Payload inválido o más de 100 códigos |
+| `502 / 503 / 504` | Fallo de Service Layer durante el batch (ver arriba) — sin parciales |
+
+---
+
+### GET /items/{itemCode}/stock/{warehouseCode}
+
+Stock del artículo en una bodega.
+
+**Respuesta exitosa — 200 OK**
+
+```json
+{
+  "itemCode": "R215.810.NO",
+  "warehouseCode": "RL-CD",
+  "inStock": 0.0,
+  "isCommitted": 292.0,
+  "uomCode": "UNIDAD",
+  "locked": false
+}
+```
+
+- `inStock` es el OnHand crudo de la bodega (sin descontar nada).
+- `isCommitted` es la cantidad comprometida/reservada — misma fuente y cálculo que el campo
+  homónimo de `POST /validations/purchase-order`, así que un mismo ítem+bodega da el mismo
+  valor consultado por cualquiera de las dos rutas. El cliente calcula
+  `disponible = inStock - isCommitted`.
+- `uomCode` es la unidad de medida a nivel ítem (campo SL `InventoryUOM`, ej. `"UNIDAD"`) —
+  **no** confundir con `InventoryUoMEntry`, que es el id numérico interno de SL y no sirve
+  como código legible. `null` si SL no la tiene poblada.
+- `locked` es el flag de bloqueo por bodega (`Locked` en `ItemWarehouseInfoCollection`).
+- `404` solo si el ítem no existe; bodega sin registro para el ítem devuelve `inStock`/`isCommitted`/`locked` en `0`/`false` (pero `uomCode` sigue resolviendo el valor a nivel ítem).
+
+---
+
+## Bodegas (Warehouses)
+
+### GET /warehouses
+
+Devuelve el catálogo completo de bodegas de SAP (reemplaza la consulta OPENQUERY sobre
+`OWHS`). Sigue internamente el paging de Service Layer (`odata.nextLink`), así que
+devuelve todas las bodegas sin importar el tamaño del catálogo.
+
+**Respuesta exitosa — 200 OK**
+
+```json
+{
+  "warehouses": [
+    { "whsCode": "RL-CD", "whsName": "ROLAND CENTRO DE DISTRIBUCION" },
+    { "whsCode": "LP-CD", "whsName": "LILI PINK CENTRO DE DISTRIBUCION" }
+  ]
+}
+```
+
+> Nota: en Service Layer los campos se llaman `WarehouseCode`/`WarehouseName`; se mapean
+> a `whsCode`/`whsName` por consistencia con el contrato que consumen los clientes.
+
+---
+
+### POST /warehouses/validate
+
+Valida una lista de códigos de bodega en una sola llamada (reemplaza el bucle N+1 de
+validación código por código). Solo lectura e idempotente.
+
+**Cuerpo del request**
+
+```json
+{ "warehouseCodes": ["RL-CD", "TIENDA01", "NOEXISTE"] }
+```
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `warehouseCodes` | array | ✓ | 1 a 200 códigos, cada uno NotEmpty max 8 chars. Repetidos se deduplican: un resultado por código único |
+
+**Respuesta exitosa — 200 OK** (siempre 200 si el batch se procesó; problemas por-elemento en `errorType`)
+
+```json
+{
+  "warehouses": [
+    { "whsCode": "RL-CD", "exists": true, "whsName": "ROLAND CENTRO DE DISTRIBUCION", "errorType": null },
+    { "whsCode": "NOEXISTE", "exists": false, "whsName": null, "errorType": "not_found" }
+  ]
+}
+```
+
+`errorType`: `null` | `"not_found"` | `"connection_error"` | `"error"` (mismo catálogo que
+`POST /validations/purchase-order`; los `null` se omiten del JSON). Fallos parciales de un
+lote interno no tumban el batch: solo esos códigos salen con `connection_error`.
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | Payload inválido o más de 200 códigos |
+| `503 Service Unavailable` | Ningún código pudo consultarse (Service Layer totalmente caído) |
+
+Usa la misma configuración `Validation` (chunks, paralelismo, timeout) que el batch de ODC.
+
+---
+
+## Validaciones (Batch)
+
+### POST /validations/purchase-order
+
+Valida una orden de compra completa (proveedor + líneas ítem/bodega) en **una sola llamada**,
+reemplazando el bucle de `GET /items/{x}` + `GET /items/{x}/stock/{wh}` + `GET /business-partners/{cc}`
+por línea. Solo lectura e idempotente: no crea nada en SAP.
+
+Internamente consulta Service Layer en lotes (`$filter` con hasta `Validation:SapChunkSize`
+códigos por query, paralelismo `Validation:MaxParallelChunks`, timeout total
+`Validation:BatchTimeoutSeconds`). Un fallo parcial de un lote **no tumba el batch**: solo
+esos elementos salen con `errorType = "connection_error"`.
+
+**Cuerpo del request**
+
+```json
+{
+  "cardCode": "P1790389219001",
+  "lines": [
+    { "itemCode": "5986.NG.8", "warehouseCode": "RL-CD" },
+    { "itemCode": "5656.8",    "warehouseCode": "RL-CD" }
+  ]
+}
+```
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `cardCode` | string | — | Si viene, se valida el proveedor. Max 15 chars |
+| `lines` | array | ✓ | 1 a 500 elementos. Pares `(itemCode, warehouseCode)` repetidos se deduplican: un resultado por par único |
+| `lines[].itemCode` | string | ✓ | NotEmpty, max 50 chars |
+| `lines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+
+**Respuesta exitosa — 200 OK** (siempre 200 si el batch pudo procesarse, aunque haya
+elementos inválidos; los problemas van por-elemento en `errorType`)
+
+```json
+{
+  "businessPartner": {
+    "cardCode": "P1790389219001",
+    "exists": true,
+    "cardName": "PROVEEDOR X S.A.",
+    "cardType": "cSupplier",
+    "valid": true,
+    "frozen": false,
+    "errorType": null
+  },
+  "items": [
+    {
+      "itemCode": "5986.NG.8",
+      "warehouseCode": "RL-CD",
+      "exists": true,
+      "itemName": "...",
+      "purchaseItem": true,
+      "valid": true,
+      "frozen": false,
+      "warehouseConfigured": true,
+      "inStock": 120.0,
+      "isCommitted": 20.0,
+      "uomCode": "UNIDAD",
+      "locked": false,
+      "errorType": null
+    }
+  ]
+}
+```
+
+Notas de semántica (idéntica a los endpoints unitarios):
+
+- `businessPartner` es `null` si no se envió `cardCode`.
+- `inStock` es el OnHand crudo de la bodega e `isCommitted` va aparte — el cliente calcula
+  `disponible = inStock - isCommitted`.
+- Los campos con valor `null` se omiten del JSON (política global de la API).
+- Cuando `errorType != null`, los demás campos del elemento pueden venir en `null`/`false`.
+
+**Catálogo de `errorType` por elemento**
+
+| errorType | Significado |
+|---|---|
+| `item_not_found` | El `itemCode` no existe en SAP (equivale al 404 de `GET /items/{x}`) |
+| `warehouse_not_found` | El ítem existe pero no está configurado en esa bodega (`warehouseConfigured=false`, `inStock=0`) |
+| `not_found` | (solo businessPartner) el `cardCode` no existe en SAP |
+| `connection_error` | No se pudo consultar ese elemento en Service Layer (fallo parcial o timeout del batch) |
+| `error` | Otro error de SL para ese elemento; incluye `errorMessage` |
+| `null` | Consulta exitosa — los flags (`exists`, `purchaseItem`, `frozen`, …) dicen si es válido; esa regla la evalúa el cliente |
+
+**Códigos de error del batch completo**
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | Payload inválido o más de 500 líneas |
+| `503 Service Unavailable` | Ningún elemento pudo consultarse (Service Layer totalmente inaccesible) |
+
+**Configuración** (`appsettings.json`, sección `Validation`)
+
+| Clave | Default | Descripción |
+|---|---|---|
+| `BatchTimeoutSeconds` | 60 | Deadline total del batch; lo no consultado sale como `connection_error` |
+| `SapChunkSize` | 20 | Códigos de ítem por query `$filter` a SL (mantener ≤ 20, page size de SL) |
+| `MaxParallelChunks` | 4 | Queries de lote simultáneas (el throttle global de SAP sigue aplicando) |
 
 ---
 

@@ -14,6 +14,7 @@ internal sealed class SapGateway : ISapGateway
     private readonly ISapSessionManager _sessionManager;
     private readonly ISapServiceLayerClient _client;
     private readonly SapThrottle _throttle;
+    private readonly ItemGroupsCache _itemGroupsCache;
     private readonly ILogger<SapGateway> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -26,11 +27,13 @@ internal sealed class SapGateway : ISapGateway
         ISapSessionManager sessionManager,
         ISapServiceLayerClient client,
         SapThrottle throttle,
+        ItemGroupsCache itemGroupsCache,
         ILogger<SapGateway> logger)
     {
         _sessionManager = sessionManager;
         _client = client;
         _throttle = throttle;
+        _itemGroupsCache = itemGroupsCache;
         _logger = logger;
     }
 
@@ -40,6 +43,9 @@ internal sealed class SapGateway : ISapGateway
         {
             DocDate = request.DocDate.ToString("yyyy-MM-dd"),
             request.Comments,
+            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
+            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
+            PriceList = -2,
             FromWarehouse = request.FromWarehouse,
             ToWarehouse = request.ToWarehouse,
             StockTransferLines = request.Lines.Select(l => new
@@ -62,6 +68,9 @@ internal sealed class SapGateway : ISapGateway
         {
             DocDate = request.DocDate.ToString("yyyy-MM-dd"),
             request.Comments,
+            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
+            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
+            PriceList = -2,
             FromWarehouse = request.FromWarehouse,
             ToWarehouse = request.ToWarehouse,
             StockTransferLines = request.Lines.Select(l => new
@@ -88,14 +97,25 @@ internal sealed class SapGateway : ISapGateway
         {
             DocDate = request.DocDate.ToString("yyyy-MM-dd"),
             request.Comments,
+            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
+            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
+            PriceList = -2,
             FromWarehouse = request.FromWarehouse,
             ToWarehouse = request.ToWarehouse,
+            // U_ODC (UDF con el nº de OC de origen) y Series los incluye el payload del flujo
+            // Python que sí funciona. U_ODC es el candidato más probable del error 1299
+            // "no data found" de la TN custom (hace lookup contra la OC). Se omiten solos si
+            // el request no los trae (WhenWritingNull).
+            U_ODC = request.UOdc,
+            Series = request.Series,
+            // ITR: la bodega va SOLO en la cabecera (FromWarehouse/ToWarehouse). A nivel de
+            // línea solo ItemCode y Quantity, replicando exactamente el payload del flujo
+            // Python que sí funcionaba. Los campos de bodega por línea (FromWarehouseCode/
+            // WarehouseCode, válidos en StockTransfers) NO se envían para un InventoryTransferRequest.
             StockTransferLines = request.Lines.Select(l => new
             {
                 l.ItemCode,
                 l.Quantity,
-                FromWarehouseCode = request.FromWarehouse,
-                WarehouseCode = request.ToWarehouse,
                 l.ProjectCode
             })
         }, JsonOptions);
@@ -330,31 +350,162 @@ internal sealed class SapGateway : ISapGateway
         }
     }
 
+    // InventoryUoMEntry is the numeric UoM entry id (e.g. -1); the human-readable UoM code
+    // used across this API's "uomCode"/InventoryUoM fields is the string field InventoryUOM
+    // (e.g. "UNIDAD") — confirmed against real Service Layer data.
+    private const string ItemSelectFields =
+        "ItemCode,ItemName,InventoryUOM,QuantityOnStock,PurchaseItem,SalesItem,InventoryItem," +
+        "Valid,Frozen,ItemType,ItemsGroupCode,Mainsupplier";
+
     public async Task<ItemResponse?> GetItemAsync(string itemCode, CancellationToken ct = default)
     {
         string json;
+        var encoded = Uri.EscapeDataString(itemCode);
         try
         {
-            var encoded = Uri.EscapeDataString(itemCode);
-            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items('{encoded}')?$select=ItemCode,ItemName,InventoryUoMEntry,QuantityOnStock,PurchaseItem", null, ct);
+            try
+            {
+                json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                    $"Items('{encoded}')?$select={ItemSelectFields},U_IXX_PACK", null, ct);
+            }
+            catch (SapException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
+            {
+                // Company DBs without the U_IXX_PACK UDF reject the $select; retry without it
+                _logger.LogWarning("SAP rejected $select with U_IXX_PACK for Item '{ItemCode}'. Retrying without the UDF.", itemCode);
+                json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                    $"Items('{encoded}')?$select={ItemSelectFields}", null, ct);
+            }
         }
-        catch (SapException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             _logger.LogWarning("SAP Item '{ItemCode}' not found", itemCode);
             return null;
         }
 
+        var groups = await GetItemGroupsMapAsync(ct);
+
         using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        return ParseItem(doc.RootElement, itemCode, groups);
+    }
+
+    public async Task<IReadOnlyList<ItemResponse>> GetItemsByCodesAsync(
+        IReadOnlyList<string> itemCodes, CancellationToken ct = default)
+    {
+        if (itemCodes.Count == 0)
+            return [];
+
+        var filter = string.Join(" or ", itemCodes.Select(c => $"ItemCode eq '{c.Replace("'", "''")}'"));
+        string json;
+        try
+        {
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"Items?$filter={filter}&$select={ItemSelectFields},U_IXX_PACK", null, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
+        {
+            _logger.LogWarning("SAP rejected $select with U_IXX_PACK for items batch. Retrying without the UDF.");
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"Items?$filter={filter}&$select={ItemSelectFields}", null, ct);
+        }
+
+        var groups = await GetItemGroupsMapAsync(ct);
+
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("value", out var arr))
+            return [];
+
+        var items = new List<ItemResponse>();
+        foreach (var element in arr.EnumerateArray())
+        {
+            if (element.TryGetProperty("ItemCode", out var ic) && ic.ValueKind == JsonValueKind.String)
+                items.Add(ParseItem(element, ic.GetString()!, groups));
+        }
+        return items;
+    }
+
+    private static ItemResponse ParseItem(
+        JsonElement root, string fallbackItemCode, IReadOnlyDictionary<int, string> groups)
+    {
+        string? StrOpt(string field) =>
+            root.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+
+        // SL sometimes returns "" instead of null for unset master-data fields
+        string? StrOptNormalized(string field) =>
+            StrOpt(field) is { } s && !string.IsNullOrWhiteSpace(s) ? s : null;
+
+        int? groupCode =
+            root.TryGetProperty("ItemsGroupCode", out var gc) && gc.ValueKind == JsonValueKind.Number && gc.TryGetInt32(out var gcVal)
+                ? gcVal
+                : null;
 
         return new ItemResponse(
-            root.TryGetProperty("ItemCode",         out var ic)    && ic.ValueKind    == JsonValueKind.String ? ic.GetString()!    : itemCode,
-            root.TryGetProperty("ItemName",         out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
-            root.TryGetProperty("InventoryUoMEntry",out var uom)   && uom.ValueKind   == JsonValueKind.String ? uom.GetString()    : null,
-            root.TryGetProperty("QuantityOnStock",   out var oh)    && oh.TryGetDecimal(out var ohVal)         ? ohVal              : 0m,
-            IsTyes(root, "PurchaseItem")
+            StrOpt("ItemCode") ?? fallbackItemCode,
+            StrOpt("ItemName") ?? string.Empty,
+            StrOpt("InventoryUOM"),
+            GetDecimalOrZero(root, "QuantityOnStock"),
+            IsTyes(root, "PurchaseItem"),
+            IsTyes(root, "SalesItem"),
+            IsTyes(root, "InventoryItem"),
+            IsTyes(root, "Valid"),
+            IsTyes(root, "Frozen"),
+            StrOpt("ItemType"),
+            StrOptNormalized("U_IXX_PACK"),
+            groupCode,
+            groupCode is int g && groups.TryGetValue(g, out var groupName) ? groupName : null,
+            StrOptNormalized("Mainsupplier")
         );
+    }
+
+    private async Task<IReadOnlyDictionary<int, string>> GetItemGroupsMapAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await _itemGroupsCache.GetOrLoadAsync(FetchItemGroupsAsync, ct);
+        }
+        catch (Exception ex)
+        {
+            // Group-name enrichment must never fail an item lookup
+            _logger.LogWarning(ex, "Could not load SAP ItemGroups; groupName will be null for this request");
+            return new Dictionary<int, string>();
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<int, string>> FetchItemGroupsAsync(CancellationToken ct)
+    {
+        var map = new Dictionary<int, string>();
+        string? resource = "ItemGroups?$select=Number,GroupName";
+
+        // SL pages results (default 20 per page); follow odata.nextLink until exhausted
+        const int maxPages = 100;
+        for (var page = 0; resource is not null && page < maxPages; page++)
+        {
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("value", out var arr))
+            {
+                foreach (var entry in arr.EnumerateArray())
+                {
+                    if (entry.TryGetProperty("Number", out var num) && num.ValueKind == JsonValueKind.Number &&
+                        num.TryGetInt32(out var code) &&
+                        entry.TryGetProperty("GroupName", out var gn) && gn.ValueKind == JsonValueKind.String)
+                    {
+                        map[code] = gn.GetString()!;
+                    }
+                }
+            }
+
+            resource = root.TryGetProperty("odata.nextLink", out var next) && next.ValueKind == JsonValueKind.String
+                ? next.GetString()
+                : root.TryGetProperty("@odata.nextLink", out var next4) && next4.ValueKind == JsonValueKind.String
+                    ? next4.GetString()
+                    : null;
+        }
+
+        _logger.LogInformation("Loaded {Count} SAP ItemGroups into cache", map.Count);
+        return map;
     }
 
     public async Task<ItemStockResponse?> GetItemStockAsync(string itemCode, string warehouseCode, CancellationToken ct = default)
@@ -366,7 +517,7 @@ internal sealed class SapGateway : ISapGateway
             // Fetch the item with its per-warehouse collection and filter in-memory;
             // SAP SL does not support $filter inside nested collections via OData.
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items('{encoded}')?$select=ItemCode,ItemWarehouseInfoCollection", null, ct);
+                $"Items('{encoded}')?$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, ct);
         }
         catch (SapException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -380,17 +531,28 @@ internal sealed class SapGateway : ISapGateway
         if (!root.TryGetProperty("ItemWarehouseInfoCollection", out var collection))
             return null;
 
+        // Item-level UoM (same field GetItemsForValidationAsync exposes as SapItemValidationData.InventoryUoM)
+        var uomCode = root.TryGetProperty("InventoryUOM", out var uom) && uom.ValueKind == JsonValueKind.String
+            ? uom.GetString()
+            : null;
+
         foreach (var entry in collection.EnumerateArray())
         {
             if (!entry.TryGetProperty("WarehouseCode", out var wc) || wc.GetString() != warehouseCode)
                 continue;
 
-            var inStock = entry.TryGetProperty("InStock", out var s) && s.TryGetDecimal(out var sv) ? sv : 0m;
-            return new ItemStockResponse(itemCode, warehouseCode, inStock);
+            // Same resolution as GetItemsForValidationAsync's SapItemWarehouseData, so both
+            // routes report identical InStock/Committed/Locked for the same item+warehouse.
+            return new ItemStockResponse(
+                itemCode, warehouseCode,
+                GetDecimalOrZero(entry, "InStock"),
+                GetDecimalOrZero(entry, "Committed"),
+                uomCode,
+                IsTyes(entry, "Locked"));
         }
 
         // Warehouse found in SAP catalog but no entry for this warehouse → stock 0
-        return new ItemStockResponse(itemCode, warehouseCode, 0m);
+        return new ItemStockResponse(itemCode, warehouseCode, 0m, 0m, uomCode, Locked: false);
     }
 
     public async Task<BusinessPartnerResponse?> GetBusinessPartnerAsync(string cardCode, CancellationToken ct = default)
@@ -472,6 +634,61 @@ internal sealed class SapGateway : ISapGateway
         return new InventoryTransferRequestsListResponse(items);
     }
 
+    public async Task<IReadOnlyList<SapItemValidationData>> GetItemsForValidationAsync(
+        IReadOnlyList<string> itemCodes, CancellationToken ct = default)
+    {
+        if (itemCodes.Count == 0)
+            return [];
+
+        var filter = string.Join(" or ", itemCodes.Select(c => $"ItemCode eq '{c.Replace("'", "''")}'"));
+        var resource = $"Items?$filter={filter}" +
+                       "&$select=ItemCode,ItemName,PurchaseItem,Valid,Frozen,InventoryUOM,ItemWarehouseInfoCollection";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("value", out var arr))
+            return [];
+
+        var items = new List<SapItemValidationData>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (!item.TryGetProperty("ItemCode", out var ic) || ic.ValueKind != JsonValueKind.String)
+                continue;
+
+            var warehouses = new List<SapItemWarehouseData>();
+            if (item.TryGetProperty("ItemWarehouseInfoCollection", out var collection) &&
+                collection.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in collection.EnumerateArray())
+                {
+                    if (!entry.TryGetProperty("WarehouseCode", out var wc) || wc.ValueKind != JsonValueKind.String)
+                        continue;
+
+                    // SL can return null for numeric fields; TryGetDecimal throws on non-Number kinds
+                    warehouses.Add(new SapItemWarehouseData(
+                        wc.GetString()!,
+                        GetDecimalOrZero(entry, "InStock"),
+                        GetDecimalOrZero(entry, "Committed"),
+                        IsTyes(entry, "Locked")
+                    ));
+                }
+            }
+
+            items.Add(new SapItemValidationData(
+                ic.GetString()!,
+                item.TryGetProperty("ItemName",          out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
+                IsTyes(item, "PurchaseItem"),
+                IsTyes(item, "Valid"),
+                IsTyes(item, "Frozen"),
+                item.TryGetProperty("InventoryUOM", out var uom)   && uom.ValueKind   == JsonValueKind.String ? uom.GetString()    : null,
+                warehouses
+            ));
+        }
+
+        return items;
+    }
+
     private async Task<string> ExecuteWithRetryOn401Async(HttpMethod method, string resource, string? payload, CancellationToken ct)
     {
         await _throttle.WaitAsync(ct);
@@ -496,6 +713,73 @@ internal sealed class SapGateway : ISapGateway
         }
     }
 
+
+    public async Task<IReadOnlyList<WarehouseResponse>> GetWarehousesAsync(CancellationToken ct = default)
+    {
+        var warehouses = new List<WarehouseResponse>();
+        string? resource = "Warehouses?$select=WarehouseCode,WarehouseName";
+
+        // SL pages results (default 20 per page); follow odata.nextLink until exhausted
+        const int maxPages = 100;
+        for (var page = 0; resource is not null && page < maxPages; page++)
+        {
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("value", out var arr))
+                warehouses.AddRange(ParseWarehouses(arr));
+
+            resource = root.TryGetProperty("odata.nextLink", out var next) && next.ValueKind == JsonValueKind.String
+                ? next.GetString()
+                : root.TryGetProperty("@odata.nextLink", out var next4) && next4.ValueKind == JsonValueKind.String
+                    ? next4.GetString()
+                    : null;
+        }
+
+        return warehouses;
+    }
+
+    public async Task<IReadOnlyList<WarehouseResponse>> GetWarehousesByCodesAsync(
+        IReadOnlyList<string> warehouseCodes, CancellationToken ct = default)
+    {
+        if (warehouseCodes.Count == 0)
+            return [];
+
+        var filter = string.Join(" or ", warehouseCodes.Select(c => $"WarehouseCode eq '{c.Replace("'", "''")}'"));
+        var resource = $"Warehouses?$filter={filter}&$select=WarehouseCode,WarehouseName";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.TryGetProperty("value", out var arr)
+            ? ParseWarehouses(arr)
+            : [];
+    }
+
+    private static List<WarehouseResponse> ParseWarehouses(JsonElement arr)
+    {
+        var warehouses = new List<WarehouseResponse>();
+        foreach (var entry in arr.EnumerateArray())
+        {
+            if (!entry.TryGetProperty("WarehouseCode", out var wc) || wc.ValueKind != JsonValueKind.String)
+                continue;
+
+            warehouses.Add(new WarehouseResponse(
+                wc.GetString()!,
+                entry.TryGetProperty("WarehouseName", out var wn) && wn.ValueKind == JsonValueKind.String
+                    ? wn.GetString()!
+                    : string.Empty
+            ));
+        }
+        return warehouses;
+    }
+
+    private static decimal GetDecimalOrZero(JsonElement el, string field) =>
+        el.TryGetProperty(field, out var p) &&
+        p.ValueKind == JsonValueKind.Number &&
+        p.TryGetDecimal(out var v) ? v : 0m;
 
     // SAP Service Layer encodes boolean flags as "tYES"/"tNO" strings.
     // This helper normalises both that encoding and actual JSON booleans.
