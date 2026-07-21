@@ -7,7 +7,12 @@ public sealed record CreateStockTransferRequest(
     string ToWarehouse,
     DateOnly DocDate,
     string? Comments,
-    IReadOnlyList<StockTransferLineDto> Lines
+    IReadOnlyList<StockTransferLineDto> Lines,
+    // Solo aplican al InventoryTransferRequest (POST /stock-transfers/requests).
+    // UOdc = nº de OC de origen (UDF U_ODC en SAP); Series = serie de numeración del documento.
+    // El flujo Python que funcionaba los envía; se omiten del payload si vienen nulos.
+    int? UOdc = null,
+    int? Series = null
 );
 
 public sealed record StockTransferLineDto(

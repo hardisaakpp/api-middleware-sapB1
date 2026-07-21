@@ -16,6 +16,11 @@ namespace Middleware.Api.Controllers.V1;
 [Route("api/v{version:apiVersion}/items")]
 public sealed class ItemsController : ControllerBase // NOSONAR
 {
+    // TODO: el commit 50323be (feature/middleware-odc) agregaba aqui POST /items/batch
+    // (GetItemsBatchUseCase + IValidator<GetItemsBatchRequest>) sobre el patron viejo de
+    // use cases directos. Se descarto en el cherry-pick porque este controller ya usa el
+    // patron job-queue (IJobExecutionCoordinator). Pendiente decidir si se reintegra como
+    // JobHandler.
     private readonly IJobExecutionCoordinator _jobCoordinator;
 
     public ItemsController(IJobExecutionCoordinator jobCoordinator)
