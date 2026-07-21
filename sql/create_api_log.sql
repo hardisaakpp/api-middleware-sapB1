@@ -1,14 +1,21 @@
 -- sc_middleware database
--- La tabla dbo.api_log ya existe. Este script es solo referencia del esquema real.
+-- Esquema tomado directamente de producción (sc_middleware.dbo.api_log) — ver
+-- src/Middleware.Infrastructure/Sql/ApiLogRepository.cs para el INSERT real que lo consume.
 --
--- Esquema existente:
---   id           INT / BIGINT  IDENTITY PK
---   endpoint     (método + path, ej: "PUT /api/stocktransfer/status")
---   request      (query string o body resumido)
---   response     (cuerpo de respuesta o mensaje de error)
---   fecha        DATETIME2     DEFAULT GETDATE() / SYSDATETIME()
---   usuario      (usuario autenticado, o "system")
---   status_code  INT
---   duracion_ms  INT
---
--- No ejecutar: la tabla ya existe en producción.
+-- En producción la tabla ya existe: no hace falta correr esto ahí.
+-- Para desarrollo/pruebas, donde normalmente no existe todavía, este script la crea si hace falta.
+
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'api_log' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.api_log
+    (
+        id          INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_api_log PRIMARY KEY,
+        endpoint    NVARCHAR(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        request     NVARCHAR(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        response    NVARCHAR(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        fecha       DATETIME2     NOT NULL,
+        usuario     NVARCHAR(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        status_code INT           NOT NULL,
+        duracion_ms BIGINT        NOT NULL
+    );
+END

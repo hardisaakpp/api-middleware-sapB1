@@ -200,13 +200,17 @@ internal sealed class SapGateway : ISapGateway
 
             using var doc = JsonDocument.Parse(json);
             if (!doc.RootElement.TryGetProperty("value", out var arr))
+            {
                 return null;
+            }
 
             foreach (var item in arr.EnumerateArray())
             {
                 if (item.TryGetProperty("DocEntry", out var de) && de.TryGetInt32(out var docEntry) && // NOSONAR
                     item.TryGetProperty("DocNum",  out var dn) && dn.TryGetInt32(out var docNum)) // NOSONAR
+                {
                     return new DocumentCreatedResult(docEntry, docNum);
+                }
             }
 
             return null;
@@ -387,12 +391,16 @@ internal sealed class SapGateway : ISapGateway
         var root = doc.RootElement;
 
         if (!root.TryGetProperty("ItemWarehouseInfoCollection", out var collection))
+        {
             return null;
+        }
 
         foreach (var entry in collection.EnumerateArray())
         {
             if (!entry.TryGetProperty("WarehouseCode", out var wc) || wc.GetString() != warehouseCode)
+            {
                 continue;
+            }
 
             var inStock = entry.TryGetProperty("InStock", out var s) && s.TryGetDecimal(out var sv) ? sv : 0m;
             return new ItemStockResponse(itemCode, warehouseCode, inStock);
@@ -449,7 +457,9 @@ internal sealed class SapGateway : ISapGateway
         var root = doc.RootElement;
 
         if (!root.TryGetProperty("value", out var arr))
+        {
             return new InventoryTransferRequestsListResponse([]);
+        }
 
         var items = arr.EnumerateArray().Select(item =>
         {
@@ -481,6 +491,24 @@ internal sealed class SapGateway : ISapGateway
         return new InventoryTransferRequestsListResponse(items);
     }
 
+    public async Task UpdateInventoryTransferRequestStatusAsync(int docEntry, string status, CancellationToken ct = default)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            U_STATUS = status // NOSONAR
+        }, JsonOptions);
+
+        try
+        {
+            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"InventoryTransferRequests({docEntry})", payload, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP InventoryTransferRequest DocEntry={DocEntry} not found (SAP 404)", docEntry); // NOSONAR
+            throw;
+        }
+    }
+
     private async Task<string> ExecuteWithRetryOn401Async(HttpMethod method, string resource, string? payload, CancellationToken ct)
     {
         await _throttle.WaitAsync(ct);
@@ -510,9 +538,18 @@ internal sealed class SapGateway : ISapGateway
     // This helper normalises both that encoding and actual JSON booleans.
     private static bool IsTyes(JsonElement root, string field)
     {
-        if (!root.TryGetProperty(field, out var p)) return false;
-        if (p.ValueKind == JsonValueKind.True)  return true;
-        if (p.ValueKind == JsonValueKind.False) return false;
+        if (!root.TryGetProperty(field, out var p))
+        {
+            return false;
+        }
+        if (p.ValueKind == JsonValueKind.True)
+        {
+            return true;
+        }
+        if (p.ValueKind == JsonValueKind.False)
+        {
+            return false;
+        }
         return p.ValueKind == JsonValueKind.String &&
                string.Equals(p.GetString(), "tYES", StringComparison.OrdinalIgnoreCase);
     }

@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Middleware.Application.Abstractions;
 using Middleware.Infrastructure.Configuration;
+using Middleware.Infrastructure.Jobs;
 using Middleware.Infrastructure.Observability;
 using Middleware.Infrastructure.Resilience;
 using Middleware.Infrastructure.Sap;
@@ -35,6 +36,7 @@ public static class DependencyInjection
         // Configuration
         services.Configure<SapSettings>(configuration.GetSection(SapSettings.SectionName));
         services.Configure<SqlSettings>(configuration.GetSection(SqlSettings.SectionName));
+        services.Configure<JobQueueSettings>(configuration.GetSection(JobQueueSettings.SectionName));
 
         services.AddHttpClient("SapLogin", (sp, client) =>
         {
@@ -66,6 +68,12 @@ public static class DependencyInjection
         // SQL
         services.AddScoped<ISqlRepository, SqlRepository>();
         services.AddScoped<IApiLogRepository, ApiLogRepository>();
+        services.AddScoped<IJobQueueRepository, JobQueueRepository>();
+
+        // Job queue (durable async fallback for slow/saturated SAP calls)
+        services.AddScoped<JobRunner>();
+        services.AddScoped<IJobExecutionCoordinator, JobExecutionCoordinator>();
+        services.AddHostedService<JobQueueRecoveryService>();
 
         // Observability
         services.AddObservability(configuration);

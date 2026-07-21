@@ -21,3 +21,5 @@ public sealed record InventoryTransferRequestLineResponse(
     decimal Quantity,
     string? WarehouseCode
 );
+
+public sealed record UpdateInventoryTransferRequestStatusResponse(bool Success, int DocEntry, string U_STATUS);

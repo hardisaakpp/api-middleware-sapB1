@@ -19,6 +19,7 @@ public interface ISapGateway
     public Task<ItemStockResponse?> GetItemStockAsync(string itemCode, string warehouseCode, CancellationToken ct = default);
     public Task<BusinessPartnerResponse?> GetBusinessPartnerAsync(string cardCode, CancellationToken ct = default);
     public Task<InventoryTransferRequestsListResponse> GetInventoryTransferRequestsByCommentAsync(string commentsContain, CancellationToken ct = default);
+    public Task UpdateInventoryTransferRequestStatusAsync(int docEntry, string status, CancellationToken ct = default);
 }
 
 public sealed record DocumentCreatedResult(int DocEntry, int DocNum);
