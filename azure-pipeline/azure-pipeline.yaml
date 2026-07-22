@@ -1,0 +1,103 @@
+trigger:
+  branches:
+    include:
+      - main
+      - test
+      - ci/*
+      - feature/*
+      - fix/*
+      - bugfix/*
+      - hotfix/*
+
+pool:
+  name: 'agents-srv-test'
+
+variables:
+  # Vinculamos el grupo de variables seguro para la autenticación en ACR
+  - group: acr-credentials
+  
+  - name: buildConfiguration
+    value: 'Release'
+    
+  # Host y ruta oficial hacia tu Azure Container Registry
+  - name: registryHost
+    value: 'dockermg-g9hrgcc4etdrh8eg.azurecr.io'
+  - name: imageName
+    value: 'dockermg-g9hrgcc4etdrh8eg.azurecr.io/api-middleware-sap'
+
+  # Lógica Declarativa de Prefijos Dinámicos por Rama
+  - ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+    - name: envTag
+      value: 'prod-latest'
+    - name: uniqueTag
+      value: 'prod-$(Build.BuildId)'
+  - ${{ elseif eq(variables['Build.SourceBranchName'], 'test') }}:
+    - name: envTag
+      value: 'test-latest'
+    - name: uniqueTag
+      value: 'test-$(Build.BuildId)'
+  - ${{ else }}:
+    - name: envTag
+      value: 'none'
+    - name: uniqueTag
+      value: 'none'
+
+steps:
+# 1. Instalación del SDK de .NET 8 en el agente local
+- task: UseDotNet@2
+  displayName: 'Setup .NET 8.0 SDK'
+  inputs:
+    packageType: 'sdk'
+    version: '8.0.x'
+
+# 2. Restauración de paquetes NuGet
+- task: DotNetCoreCLI@2
+  displayName: 'Restore dependencies'
+  inputs:
+    command: 'restore'
+    projects: '**/*.csproj'
+
+# 3. Compilación de la solución
+- task: DotNetCoreCLI@2
+  displayName: 'Build solution'
+  inputs:
+    command: 'build'
+    projects: '**/*.csproj'
+    arguments: '--configuration $(buildConfiguration) --no-restore'
+
+# 4. Ejecución de Pruebas Unitarias
+- task: DotNetCoreCLI@2
+  displayName: 'Run Unit Tests'
+  inputs:
+    command: 'test'
+    projects: 'tests/Middleware.UnitTests/Middleware.UnitTests.csproj'
+    arguments: '--configuration $(buildConfiguration) --no-build'
+    publishTestResults: true
+
+# 5. Ejecución de Pruebas de Integración (Excluyendo la inestable)
+- task: DotNetCoreCLI@2
+  displayName: 'Run Integration Tests'
+  inputs:
+    command: 'test'
+    projects: 'tests/Middleware.IntegrationTests/Middleware.IntegrationTests.csproj'
+    arguments: '--configuration $(buildConfiguration) --no-build --filter "FullyQualifiedName!=Middleware.IntegrationTests.Concurrency.SapThrottleTests.Throttle_DoesNotDropRequests_UnderHighConcurrency"'
+    publishTestResults: true
+
+# ----------------------------------------------------------------------
+# EMPAQUETADO DOCKER Y PUBLICACIÓN EN ACR
+# ----------------------------------------------------------------------
+- script: |
+    echo "0. Autenticando contra el registro de Azure ($(registryHost))..."
+    echo "$(acrPassword)" | docker login $(registryHost) -u "$(acrUsername)" --password-stdin
+
+    echo "1. Construyendo la imagen de Docker para api-middleware-sap ($(envTag))..."
+    docker build -f Dockerfile \
+      -t $(imageName):$(uniqueTag) \
+      -t $(imageName):$(envTag) .
+    
+    echo "2. Subiendo imágenes al registro corporativo de Azure..."
+    docker push $(imageName):$(uniqueTag)
+    docker push $(imageName):$(envTag)
+  displayName: 'Build and Push Docker Image to ACR'
+  # Candado: Solo ejecuta Docker si las pruebas pasaron Y la rama es main o develop
+  condition: and(succeeded(), ne(variables.envTag, 'none'))

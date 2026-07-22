@@ -67,7 +67,7 @@ public sealed class SapCapacityTest
         // Each phase gets its own factory so MaxConcurrentSapCalls matches the level.
         // This removes the throttle cap for the phase so we're measuring SAP, not the throttle.
         await using var factory = new WebApplicationFactory<Program>()
-            .WithWebHostBuilder(b => b.ConfigureAppConfiguration(cfg =>
+            .WithWebHostBuilder(b => b.ConfigureAppConfiguration((_, cfg) =>
                 cfg.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Sap:MaxConcurrentSapCalls"] = concurrency.ToString()
@@ -91,7 +91,9 @@ public sealed class SapCapacityTest
                 reqSw.Stop();
 
                 if (response.StatusCode is not (HttpStatusCode.OK or HttpStatusCode.NotFound))
+                {
                     Interlocked.Increment(ref errors);
+                }
             }
             catch
             {
@@ -100,7 +102,10 @@ public sealed class SapCapacityTest
             }
             finally
             {
-                lock (timings) timings.Add(reqSw.ElapsedMilliseconds);
+                lock (timings)
+                {
+                    timings.Add(reqSw.ElapsedMilliseconds);
+                }
             }
         });
 
@@ -133,7 +138,10 @@ public sealed class SapCapacityTest
 
         private long Percentile(int p)
         {
-            if (Timings.Count == 0) return 0;
+            if (Timings.Count == 0)
+            {
+                return 0;
+            }
             var idx = (int)Math.Ceiling(p / 100.0 * Timings.Count) - 1;
             return Timings[Math.Clamp(idx, 0, Timings.Count - 1)];
         }

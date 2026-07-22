@@ -11,8 +11,7 @@ public sealed record CreateLiquidacionRequest(
 public sealed record LiquidacionLineDto(
     string ItemCode,
     decimal Quantity,
-    string WarehouseCode,
-    string? AccountCode = null
+    string WarehouseCode
 );
 
 public sealed class CreateLiquidacionRequestValidator : AbstractValidator<CreateLiquidacionRequest>

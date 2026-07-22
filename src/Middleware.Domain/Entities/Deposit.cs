@@ -22,7 +22,10 @@ public sealed class Deposit
         string? comments = null)
     {
         ArgumentNullException.ThrowIfNull(lines);
-        if (lines.Count == 0) throw new ArgumentException("At least one line is required.", nameof(lines));
+        if (lines.Count == 0)
+        {
+            throw new ArgumentException("At least one line is required.", nameof(lines));
+        }
 
         return new Deposit
         {
@@ -44,6 +47,5 @@ public sealed class Deposit
 public sealed record DepositLine(
     string ItemCode,
     decimal Quantity,
-    string WarehouseCode,
-    string? AccountCode = null
+    string WarehouseCode
 );

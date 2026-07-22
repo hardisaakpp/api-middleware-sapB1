@@ -29,13 +29,17 @@ internal sealed class SapSessionManager : ISapSessionManager
     public async Task<string> GetSessionTokenAsync(CancellationToken cancellationToken = default)
     {
         if (_sessionToken is not null && DateTimeOffset.UtcNow < _expiresAt)
+        {
             return _sessionToken;
+        }
 
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
             if (_sessionToken is not null && DateTimeOffset.UtcNow < _expiresAt)
+            {
                 return _sessionToken;
+            }
 
             await LoginAsync(cancellationToken);
             return _sessionToken!;
@@ -82,7 +86,9 @@ internal sealed class SapSessionManager : ISapSessionManager
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
 
         if (!response.IsSuccessStatusCode)
+        {
             throw new SapException(response.StatusCode, content);
+        }
 
         using var doc = JsonDocument.Parse(content);
         var sessionId = doc.RootElement.GetProperty("SessionId").GetString()

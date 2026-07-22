@@ -123,6 +123,29 @@ Para añadir una v2 en el futuro:
 
 ---
 
+## Servicios en background
+
+### SapSessionWarmupService
+
+**Archivo**: `src/Middleware.Infrastructure/Sap/SapSessionWarmupService.cs`
+
+`IHostedService` que hace login a SAP inmediatamente al arrancar la aplicación, antes de que llegue el primer request real.
+
+**Por qué existe**: sin este warmup, el primer request de producción carga con la latencia del login (~500ms) además de su propia operación. Con el warmup, la sesión ya está activa y el primer request usa el fast-path del token cacheado.
+
+**Comportamiento ante fallos**: si el warmup falla (SAP no disponible al arrancar), el error se loguea como `Warning` y el servicio continúa arrancando. El primer request real reintentará el login a través del mecanismo normal de `SapSessionManager`. Este comportamiento no-fatal es intencional — el middleware no debe fallar su arranque porque SAP esté temporalmente inalcanzable.
+
+```
+Startup
+  └── SapSessionWarmupService.StartAsync()
+        ├── Éxito → sesión pre-cargada, primer request usa token cacheado
+        └── Fallo → Warning en logs, primer request hace login normalmente
+```
+
+Relación con health checks: `/health/ready` verifica la sesión SAP **después** del warmup. Si el warmup falló, la readiness probe reportará `Unhealthy` hasta que la sesión se establezca con el primer request real.
+
+---
+
 ## Observabilidad
 
 | Componente | Implementación |

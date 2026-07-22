@@ -21,7 +21,10 @@ public sealed class DepositsControllerTests : IClassFixture<WebApplicationFactor
             builder.ConfigureServices(services =>
             {
                 var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(ISapGateway));
-                if (descriptor is not null) services.Remove(descriptor);
+                if (descriptor is not null)
+                {
+                    services.Remove(descriptor);
+                }
 
                 var mock = new Mock<ISapGateway>();
                 mock.Setup(g => g.CreateDepositAsync(

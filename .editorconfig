@@ -46,3 +46,9 @@ csharp_prefer_braces = true:warning
 
 # File-scoped namespaces
 csharp_style_namespace_declarations = file_scoped:warning
+
+# Keep explicit member names in anonymous types: they pin the SAP Service Layer JSON contract.
+# Simplifying (e.g. `FromWarehouse = request.FromWarehouse` -> `request.FromWarehouse`) would
+# silently couple the outgoing JSON key to the C# property name, so we opt out of the suggestion.
+dotnet_style_prefer_inferred_anonymous_type_member_names = false:silent
+dotnet_style_prefer_inferred_tuple_names = false:silent

@@ -3,6 +3,8 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Middleware.Infrastructure.Sap;
+using Polly.CircuitBreaker;
+using Polly.Timeout;
 
 namespace Middleware.Api.Middleware;
 
@@ -29,15 +31,19 @@ public sealed class GlobalExceptionMiddleware
             var correlationId = context.Items[CorrelationIdHeader]?.ToString() ?? "unknown";
 
             if (ex is SapException { StatusCode: System.Net.HttpStatusCode.NotFound })
+            {
                 _logger.LogWarning("SAP 404 on {Method} {Path} — resource not found in SAP",
                     context.Request.Method,
                     context.Request.Path);
+            }
             else
+            {
                 _logger.LogError(ex,
                     "Unhandled exception {ExceptionType} on {Method} {Path}",
                     ex.GetType().Name,
                     context.Request.Method,
                     context.Request.Path);
+            }
 
             await WriteProblemDetailsAsync(context, ex, correlationId);
         }
@@ -45,10 +51,16 @@ public sealed class GlobalExceptionMiddleware
 
     private static async Task WriteProblemDetailsAsync(HttpContext context, Exception ex, string correlationId)
     {
-        if (context.Response.HasStarted) return;
+        if (context.Response.HasStarted)
+        {
+            return;
+        }
 
         var (statusCode, title) = ex switch
         {
+            SapThrottleException               => (HttpStatusCode.ServiceUnavailable, "SAP service busy"),
+            BrokenCircuitException             => (HttpStatusCode.ServiceUnavailable, "SAP circuit breaker open"),
+            TimeoutRejectedException           => (HttpStatusCode.GatewayTimeout, "SAP response timeout"),
             OperationCanceledException         => (HttpStatusCode.ServiceUnavailable, "Request cancelled"),
             ArgumentException                  => (HttpStatusCode.BadRequest, "Invalid request"),
             SapResponseException               => (HttpStatusCode.BadGateway, "SAP returned an unexpected response"),

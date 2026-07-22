@@ -10,5 +10,6 @@ public sealed class SapSettings
     public string Password { get; init; } = string.Empty;
     public int TimeoutSeconds { get; init; } = 30;
     public int MaxConcurrentSapCalls { get; init; } = 5;
+    public int ThrottleWaitSeconds { get; init; } = 8;
     public string? TestCompanyDb { get; init; }
 }

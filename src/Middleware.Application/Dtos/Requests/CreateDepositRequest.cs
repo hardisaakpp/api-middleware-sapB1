@@ -14,8 +14,7 @@ public sealed record CreateDepositRequest(
 public sealed record DepositLineDto(
     string ItemCode,
     decimal Quantity,
-    string WarehouseCode,
-    string? AccountCode = null
+    string WarehouseCode
 );
 
 public sealed class CreateDepositRequestValidator : AbstractValidator<CreateDepositRequest>

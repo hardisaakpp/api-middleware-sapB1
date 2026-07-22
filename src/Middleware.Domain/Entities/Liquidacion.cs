@@ -16,7 +16,10 @@ public sealed class Liquidacion
         string? comments = null)
     {
         ArgumentNullException.ThrowIfNull(lines);
-        if (lines.Count == 0) throw new ArgumentException("At least one line is required.", nameof(lines));
+        if (lines.Count == 0)
+        {
+            throw new ArgumentException("At least one line is required.", nameof(lines));
+        }
 
         return new Liquidacion
         {
@@ -36,6 +39,5 @@ public sealed class Liquidacion
 public sealed record LiquidacionLine(
     string ItemCode,
     decimal Quantity,
-    string WarehouseCode,
-    string? AccountCode = null
+    string WarehouseCode
 );

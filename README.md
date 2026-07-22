@@ -99,7 +99,7 @@ tests/
 
 | Documento | Contenido |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | Capas, ciclo de vida de un request, manejo de errores |
+| [docs/architecture.md](docs/architecture.md) | Capas, ciclo de vida de un request, servicios background, manejo de errores |
 | [docs/api.md](docs/api.md) | Referencia completa de endpoints |
 | [docs/configuration.md](docs/configuration.md) | Todas las claves de configuración |
 | [docs/concurrency.md](docs/concurrency.md) | Diseño del throttle, sesión SAP, Polly |

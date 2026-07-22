@@ -31,7 +31,9 @@ internal static class ObservabilityExtensions
                     .AddHttpClientInstrumentation();
 
                 if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+                {
                     tracing.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+                }
             })
             .WithMetrics(metrics =>
             {
@@ -41,7 +43,9 @@ internal static class ObservabilityExtensions
                     .AddHttpClientInstrumentation();
 
                 if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+                {
                     metrics.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+                }
             });
 
         return services;
