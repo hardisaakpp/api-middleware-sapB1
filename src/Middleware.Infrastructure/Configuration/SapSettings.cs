@@ -11,5 +11,6 @@ public sealed class SapSettings
     public int TimeoutSeconds { get; init; } = 30;
     public int MaxConcurrentSapCalls { get; init; } = 5;
     public int ThrottleWaitSeconds { get; init; } = 8;
+    public int ItemGroupsCacheMinutes { get; init; } = 360;
     public string? TestCompanyDb { get; init; }
 }

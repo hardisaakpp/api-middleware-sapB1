@@ -53,17 +53,17 @@ Crea `src/Middleware.Api/appsettings.Development.local.json` (ignorado por `.git
 dotnet run --project src/Middleware.Api
 ```
 
-La API arranca en `http://localhost:5250`.  
-Swagger UI (solo Development): `http://localhost:5250/swagger`  
-Health check: `http://localhost:5250/health`
+La API arranca en `http://localhost:8011`.  
+Swagger UI (solo Development): `http://localhost:8011/swagger`  
+Health check: `http://localhost:8011/health`
 
 ### 3. Verificar
 
 ```bash
-curl http://localhost:5250/health
+curl http://localhost:8011/health
 # {"status":"Healthy"}
 
-curl http://localhost:5250/api/v1/purchase-orders/1
+curl http://localhost:8011/api/v1/purchase-orders/1
 # {"docEntry":1,"docNum":100,...}
 ```
 

@@ -11,6 +11,8 @@ using Middleware.Application.UseCases.Items;
 using Middleware.Application.UseCases.Liquidaciones;
 using Middleware.Application.UseCases.PurchaseOrders;
 using Middleware.Application.UseCases.StockTransfer;
+using Middleware.Application.UseCases.Validations;
+using Middleware.Application.UseCases.Warehouses;
 
 namespace Middleware.Application;
 
@@ -30,9 +32,13 @@ public static class DependencyInjection
         services.AddScoped<UpdatePurchaseOrderUseCase>();
         services.AddScoped<GetItemUseCase>();
         services.AddScoped<GetItemStockUseCase>();
+        services.AddScoped<GetItemsBatchUseCase>();
         services.AddScoped<GetBusinessPartnerUseCase>();
         services.AddScoped<GetInventoryTransferRequestsByCommentUseCase>();
         services.AddScoped<UpdateInventoryTransferRequestStatusUseCase>();
+        services.AddScoped<ValidatePurchaseOrderUseCase>();
+        services.AddScoped<GetWarehousesUseCase>();
+        services.AddScoped<ValidateWarehousesUseCase>();
 
         services.AddScoped<IJobHandler, CreatePurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();

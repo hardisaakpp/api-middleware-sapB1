@@ -25,7 +25,9 @@ internal sealed class ApiLogRepository : IApiLogRepository
         cmd.Parameters.AddWithValue("@endpoint",   entry.Endpoint);
         cmd.Parameters.AddWithValue("@request",    entry.Request  ?? string.Empty);
         cmd.Parameters.AddWithValue("@response",   entry.Response ?? string.Empty);
-        cmd.Parameters.AddWithValue("@fecha",      DateTime.Now);
+        // Ecuador no observa horario de verano, por lo que el offset -5 es fijo;
+        // el contenedor corre en UTC, así que DateTime.Now guardaría la hora adelantada 5 horas.
+        cmd.Parameters.AddWithValue("@fecha",      DateTime.UtcNow.AddHours(-5));
         cmd.Parameters.AddWithValue("@usuario",    entry.Usuario);
         cmd.Parameters.AddWithValue("@statusCode", entry.StatusCode);
         cmd.Parameters.AddWithValue("@duracionMs", entry.DurationMs);
