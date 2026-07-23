@@ -25,7 +25,8 @@ internal sealed class ApiLogRepository : IApiLogRepository
         cmd.Parameters.AddWithValue("@endpoint",   entry.Endpoint);
         cmd.Parameters.AddWithValue("@request",    entry.Request  ?? string.Empty);
         cmd.Parameters.AddWithValue("@response",   entry.Response ?? string.Empty);
-        cmd.Parameters.AddWithValue("@fecha",      DateTime.Now);
+
+        cmd.Parameters.AddWithValue("@fecha",      DateTime.UtcNow.AddHours(-5));
         cmd.Parameters.AddWithValue("@usuario",    entry.Usuario);
         cmd.Parameters.AddWithValue("@statusCode", entry.StatusCode);
         cmd.Parameters.AddWithValue("@duracionMs", entry.DurationMs);

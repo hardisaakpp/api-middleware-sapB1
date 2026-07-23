@@ -1,9 +1,11 @@
 using System.Net;
 using System.Text.Json;
 using Asp.Versioning;
+using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Middleware.Application.Abstractions;
+using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
 using Middleware.Application.Jobs;
 using Middleware.Application.Jobs.Handlers;
@@ -17,10 +19,44 @@ namespace Middleware.Api.Controllers.V1;
 public sealed class ItemsController : ControllerBase // NOSONAR
 {
     private readonly IJobExecutionCoordinator _jobCoordinator;
+    private readonly GetItemsBatchUseCase _getItemsBatchUseCase;
+    private readonly IValidator<GetItemsBatchRequest> _batchValidator;
 
-    public ItemsController(IJobExecutionCoordinator jobCoordinator)
+    public ItemsController(
+        IJobExecutionCoordinator jobCoordinator,
+        GetItemsBatchUseCase getItemsBatchUseCase,
+        IValidator<GetItemsBatchRequest> batchValidator)
     {
         _jobCoordinator = jobCoordinator;
+        _getItemsBatchUseCase = getItemsBatchUseCase;
+        _batchValidator = batchValidator;
+    }
+
+    /// <summary>
+    /// Fetches full master data for up to 100 items in a single call. Codes that do not
+    /// exist in SAP are listed in notFound; result order is not guaranteed. A Service
+    /// Layer connectivity failure fails the whole request (no silent partial results).
+    /// </summary>
+    [HttpPost("batch")]
+    [ProducesResponseType(typeof(ItemsBatchResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<ItemsBatchResponse>> GetBatch(
+        [FromBody] GetItemsBatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        var validation = await _batchValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            foreach (var failure in validation.Errors)
+            {
+                ModelState.AddModelError(failure.PropertyName, failure.ErrorMessage);
+            }
+            return ValidationProblem(ModelState);
+        }
+
+        var result = await _getItemsBatchUseCase.ExecuteAsync(request, cancellationToken);
+        return Ok(result);
     }
 
     [HttpGet("{itemCode}")]

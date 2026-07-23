@@ -54,7 +54,7 @@ internal sealed class JobRunner
             {
                 attempts++;
                 var backoffSeconds = _settings.RetryBackoffSeconds[Math.Min(attempts - 1, _settings.RetryBackoffSeconds.Length - 1)];
-                var nextRetryAt = DateTime.UtcNow.AddSeconds(backoffSeconds);
+                var nextRetryAt = DateTime.Now.AddSeconds(backoffSeconds);
 
                 _logger.LogWarning(ex, "Job {JobId} failed transiently (attempt {Attempts}/{Max}), retrying in {Backoff}s",
                     jobId, attempts, _settings.MaxRetryAttempts, backoffSeconds);

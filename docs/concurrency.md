@@ -200,3 +200,58 @@ catch (SapException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized)
 ```
 
 Este retry manual de 401 está separado del pipeline de Polly porque Polly no reintenta 4xx por defecto (correcto — 401 no es un error transitorio de red, sino de estado de sesión).
+
+---
+
+## Ciclo de vida de conexiones HTTP (`PooledConnectionLifetime`)
+
+**Archivo**: `src/Middleware.Infrastructure/DependencyInjection.cs` (`BuildSapHandler`)
+
+### El problema (detectado 2026-07-14 en logs de producción)
+
+`SocketsHttpHandler` reutiliza conexiones TCP del pool indefinidamente por defecto
+(`PooledConnectionLifetime = Timeout.InfiniteTimeSpan`). El servidor de SAP Service Layer
+cierra conexiones keep-alive inactivas por su lado antes de que .NET las dé de baja, así
+que una conexión que ya está muerta del lado servidor puede seguir en el pool del cliente.
+
+Cuando el middleware reutiliza esa conexión ya cerrada, el request falla a mitad de camino
+con `HttpIOException: The response ended prematurely`. Polly lo reintenta (correcto, es un
+`HttpRequestException`), pero eso agrega un ciclo completo de backoff (~1s base + jitter)
+más la reconexión — **overhead 100% evitable** que se sentía como lentitud en el envío de
+ODCs y STs, agravado porque se crea una `InventoryTransferRequest` por cada bodega destino
+del pedido (el overhead se acumula linealmente con la cantidad de bodegas).
+
+Ejemplo real del log: intento 0 falla en 57.9ms (conexión muerta), intento 1 tarda 324.5ms
+y sí llega a SAP — total 1699ms para ese request, de los cuales ~1.3-1.7s son puro overhead
+de reconexión, no trabajo real contra SAP Service Layer.
+
+### El fix
+
+```csharp
+private static SocketsHttpHandler BuildSapHandler() => new()
+{
+    SslOptions = new SslClientAuthenticationOptions { /* ... */ },
+    PooledConnectionIdleTimeout = TimeSpan.FromSeconds(45),
+    PooledConnectionLifetime = TimeSpan.FromMinutes(3)
+};
+```
+
+- `PooledConnectionIdleTimeout` (45s): una conexión que lleva más de 45s sin usarse se
+  descarta del pool proactivamente, en vez de esperar a que un request real descubra que
+  ya está muerta. Evita justo el escenario del log.
+- `PooledConnectionLifetime` (3 min): rota conexiones periódicamente incluso bajo uso
+  constante, como defensa adicional (cambios de DNS, balanceo, etc.).
+
+Ambos valores son deliberadamente más cortos que el timeout de keep-alive típico de la
+mayoría de servidores de aplicación — el objetivo es que el cliente cierre la conexión
+*antes* de que el servidor lo haga, nunca después.
+
+### Qué no arregla esto
+
+Este fix reduce el overhead de reconexión, pero no toca:
+- Errores de negocio de SAP (ej. `-1116` de `SBO_SP_TRANSACTIONNOTIFICATION` sin soporte
+  para `InventoryTransferRequests`) — eso es una customización de la base de compañía SAP,
+  fuera del alcance del middleware.
+- La latencia base de crear N documentos secuenciales (una ODC con transferencias a M
+  bodegas sigue siendo M llamadas). Para eso, ver el pendiente "job durable ODC+ITRs" en el
+  backlog del proyecto.

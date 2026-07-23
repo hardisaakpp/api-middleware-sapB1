@@ -12,7 +12,8 @@ COPY ["src/Middleware.Application/Middleware.Application.csproj", "src/Middlewar
 COPY ["src/Middleware.Domain/Middleware.Domain.csproj", "src/Middleware.Domain/"]
 COPY ["src/Middleware.Infrastructure/Middleware.Infrastructure.csproj", "src/Middleware.Infrastructure/"]
 RUN dotnet restore "./src/Middleware.Api/Middleware.Api.csproj"
-COPY . .
+COPY ["global.json", "Directory.Build.props", "./"]
+COPY ["src/", "src/"]
 WORKDIR "/src/src/Middleware.Api"
 RUN dotnet build "./Middleware.Api.csproj" -c "$BUILD_CONFIGURATION" -o /app/build
 
@@ -22,5 +23,6 @@ RUN dotnet publish "./Middleware.Api.csproj" -c "$BUILD_CONFIGURATION" -o /app/p
 
 FROM base AS final
 WORKDIR /app
+USER $APP_UID
 COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "Middleware.Api.dll"]
