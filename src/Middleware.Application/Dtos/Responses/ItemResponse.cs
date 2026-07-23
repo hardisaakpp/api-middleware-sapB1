@@ -5,11 +5,23 @@ public sealed record ItemResponse(
     string ItemName,
     string? InventoryUoM,
     decimal OnHand,
-    bool PurchaseItem
+    bool PurchaseItem,
+    bool SalesItem,
+    bool InventoryItem,
+    bool Valid,
+    bool Frozen,
+    string? ItemType,
+    string? PackCode,
+    int? GroupCode,
+    string? GroupName,
+    string? PreferredVendorCode
 );
 
 public sealed record ItemStockResponse(
     string ItemCode,
     string WarehouseCode,
-    decimal InStock
+    decimal InStock,
+    decimal IsCommitted,
+    string? UomCode,
+    bool Locked
 );

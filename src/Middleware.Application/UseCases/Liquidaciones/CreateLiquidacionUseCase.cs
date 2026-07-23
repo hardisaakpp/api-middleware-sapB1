@@ -19,8 +19,8 @@ public sealed class CreateLiquidacionUseCase : IUseCase<CreateLiquidacionRequest
     public async Task<LiquidacionResponse> ExecuteAsync(CreateLiquidacionRequest request, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation(
-            "Creating Liquidacion for date {DocDate} with {LineCount} lines",
-            request.DocDate, request.Lines.Count);
+            "Creating Liquidacion for CardCode {CardCode} with {LineCount} lines",
+            request.CardCode, request.DocumentLines?.Count ?? 0);
 
         var result = await _gateway.CreateLiquidacionAsync(request, cancellationToken);
 
