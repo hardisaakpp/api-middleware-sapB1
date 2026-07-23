@@ -469,6 +469,14 @@ internal sealed class SapGateway : ISapGateway
         );
     }
 
+    public async Task PrewarmItemGroupsAsync(CancellationToken ct = default)
+    {
+        // GetItemGroupsMapAsync never throws (it swallows load failures and leaves the cache
+        // cold on error), so this is safe to fire at startup without guarding.
+        var groups = await GetItemGroupsMapAsync(ct);
+        _logger.LogInformation("ItemGroups cache pre-warmed with {Count} group(s)", groups.Count);
+    }
+
     private async Task<IReadOnlyDictionary<int, string>> GetItemGroupsMapAsync(CancellationToken ct)
     {
         try

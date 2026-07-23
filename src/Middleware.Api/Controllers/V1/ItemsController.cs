@@ -1,9 +1,11 @@
 using System.Net;
 using System.Text.Json;
 using Asp.Versioning;
+using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Middleware.Application.Abstractions;
+using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
 using Middleware.Application.Jobs;
 using Middleware.Application.Jobs.Handlers;
@@ -16,16 +18,60 @@ namespace Middleware.Api.Controllers.V1;
 [Route("api/v{version:apiVersion}/items")]
 public sealed class ItemsController : ControllerBase // NOSONAR
 {
-    // TODO: el commit 50323be (feature/middleware-odc) agregaba aqui POST /items/batch
-    // (GetItemsBatchUseCase + IValidator<GetItemsBatchRequest>) sobre el patron viejo de
-    // use cases directos. Se descarto en el cherry-pick porque este controller ya usa el
-    // patron job-queue (IJobExecutionCoordinator). Pendiente decidir si se reintegra como
-    // JobHandler.
     private readonly IJobExecutionCoordinator _jobCoordinator;
+    private readonly IValidator<GetItemsBatchRequest> _batchValidator;
 
-    public ItemsController(IJobExecutionCoordinator jobCoordinator)
+    public ItemsController(
+        IJobExecutionCoordinator jobCoordinator,
+        IValidator<GetItemsBatchRequest> batchValidator)
     {
         _jobCoordinator = jobCoordinator;
+        _batchValidator = batchValidator;
+    }
+
+    /// <summary>
+    /// Fetches full master data for up to 100 items in a single call. Codes that do not
+    /// exist in SAP are listed in notFound; result order is not guaranteed. A Service
+    /// Layer connectivity failure fails the whole request (no silent partial results).
+    /// Follows the same job-queue pattern as the sibling item endpoints: a healthy batch
+    /// completes inline and returns 200; if SAP is slow past QueueAfterSeconds or fails
+    /// transiently, the work is durably queued and 202 + jobId is returned to poll via
+    /// GET /api/v1/jobs/{jobId} (instead of an immediate, non-recoverable 503).
+    /// </summary>
+    [HttpPost("batch")]
+    [ProducesResponseType(typeof(ItemsBatchResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetBatch(
+        [FromBody] GetItemsBatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        var validation = await _batchValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            foreach (var failure in validation.Errors)
+            {
+                ModelState.AddModelError(failure.PropertyName, failure.ErrorMessage);
+            }
+            return ValidationProblem(ModelState);
+        }
+
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetItemsBatch",
+            "POST /api/v1/items/batch",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetItemsBatchUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<ItemsBatchResponse> c => Ok(c.Response),
+            JobQueued<ItemsBatchResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
     }
 
     [HttpGet("{itemCode}")]

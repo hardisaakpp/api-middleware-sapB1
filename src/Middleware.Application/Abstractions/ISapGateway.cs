@@ -24,6 +24,14 @@ public interface ISapGateway
     /// </summary>
     public Task<IReadOnlyList<ItemResponse>> GetItemsByCodesAsync(IReadOnlyList<string> itemCodes, CancellationToken ct = default);
     public Task<ItemStockResponse?> GetItemStockAsync(string itemCode, string warehouseCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Pre-loads the ItemGroups map into its cache so the first real item lookup does not
+    /// pay the one-time cost of paging the full ItemGroups collection from Service Layer.
+    /// Safe to call at startup: never throws (a failed load leaves the cache cold so the
+    /// next item request simply retries).
+    /// </summary>
+    public Task PrewarmItemGroupsAsync(CancellationToken ct = default);
     public Task<BusinessPartnerResponse?> GetBusinessPartnerAsync(string cardCode, CancellationToken ct = default);
     public Task<InventoryTransferRequestsListResponse> GetInventoryTransferRequestsByCommentAsync(string commentsContain, CancellationToken ct = default);
     public Task UpdateInventoryTransferRequestStatusAsync(int docEntry, string status, CancellationToken ct = default);
