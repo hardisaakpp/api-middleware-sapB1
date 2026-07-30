@@ -20,12 +20,18 @@ public sealed class CreateStockTransferTestUseCaseTests
     [Fact]
     public async Task ExecuteAsync_ValidRequest_ReturnsDocumentNumbers()
     {
-        var request = new CreateStockTransferRequest(
+        var request = new CreateStockTransferTestRequest(
+            DocObjectCode: null,
+            CardCode: null,
+            DocDate: "2024-06-01",
+            TaxDate: null,
+            Comments: null,
             FromWarehouse: "WH01",
             ToWarehouse: "WH02",
-            DocDate: new DateOnly(2024, 6, 1),
-            Comments: null,
-            Lines: [new StockTransferLineDto("ITEM001", 10m)]
+            U_ORIGEN: null,
+            Series: null,
+            PriceList: null,
+            StockTransferLines: [new StockTransferTestLineDto(null, null, null, "ITEM001", 10m, "WH02")]
         );
 
         _gatewayMock
@@ -42,12 +48,18 @@ public sealed class CreateStockTransferTestUseCaseTests
     [Fact]
     public async Task ExecuteAsync_GatewayThrows_PropagatesException()
     {
-        var request = new CreateStockTransferRequest(
+        var request = new CreateStockTransferTestRequest(
+            DocObjectCode: null,
+            CardCode: null,
+            DocDate: "2024-06-01",
+            TaxDate: null,
+            Comments: null,
             FromWarehouse: "WH01",
             ToWarehouse: "WH02",
-            DocDate: new DateOnly(2024, 6, 1),
-            Comments: null,
-            Lines: [new StockTransferLineDto("ITEM001", 5m)]
+            U_ORIGEN: null,
+            Series: null,
+            PriceList: null,
+            StockTransferLines: [new StockTransferTestLineDto(null, null, null, "ITEM001", 5m, "WH02")]
         );
 
         _gatewayMock

@@ -23,64 +23,12 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         _jobCoordinator = jobCoordinator;
     }
 
-    [HttpPost]
-    [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
-    [ProducesResponseType(StatusCodes.Status202Accepted)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> Create(
-        [FromBody] CreateStockTransferRequest request,
-        CancellationToken cancellationToken)
-    {
-        var payloadJson = JsonSerializer.Serialize(request);
-
-        var outcome = await _jobCoordinator.ExecuteAsync(
-            "CreateStockTransfer",
-            "POST /api/v1/stock-transfers",
-            payloadJson,
-            (sp, ct) => sp.GetRequiredService<CreateStockTransferUseCase>().ExecuteAsync(request, ct),
-            (int)HttpStatusCode.Created,
-            cancellationToken);
-
-        return outcome switch
-        {
-            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(Create), c.Response),
-            JobQueued<StockTransferResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
-            _ => StatusCode(StatusCodes.Status500InternalServerError)
-        };
-    }
-
-    [HttpPost("with-bins")]
-    [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
-    [ProducesResponseType(StatusCodes.Status202Accepted)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> CreateWithBins(
-        [FromBody] CreateStockTransferWithBinsRequest request,
-        CancellationToken cancellationToken)
-    {
-        var payloadJson = JsonSerializer.Serialize(request);
-
-        var outcome = await _jobCoordinator.ExecuteAsync(
-            "CreateStockTransferWithBins",
-            "POST /api/v1/stock-transfers/with-bins",
-            payloadJson,
-            (sp, ct) => sp.GetRequiredService<CreateStockTransferWithBinsUseCase>().ExecuteAsync(request, ct),
-            (int)HttpStatusCode.Created,
-            cancellationToken);
-
-        return outcome switch
-        {
-            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(CreateWithBins), c.Response),
-            JobQueued<StockTransferResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
-            _ => StatusCode(StatusCodes.Status500InternalServerError)
-        };
-    }
-
     [HttpPost("test")]
     [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> CreateTest(
-        [FromBody] CreateStockTransferRequest request,
+        [FromBody] CreateStockTransferTestRequest request,
         CancellationToken cancellationToken)
     {
         var payloadJson = JsonSerializer.Serialize(request);

@@ -46,32 +46,7 @@ internal sealed class SapGateway : ISapGateway
         _logger = logger;
     }
 
-    public async Task<DocumentCreatedResult> CreateStockTransferAsync(CreateStockTransferRequest request, CancellationToken ct = default)
-    {
-        var payload = JsonSerializer.Serialize(new
-        {
-            DocDate = request.DocDate.ToString("yyyy-MM-dd"), // NOSONAR
-            request.Comments,
-            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
-            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
-            PriceList = -2,
-            FromWarehouse = request.FromWarehouse, // NOSONAR
-            ToWarehouse = request.ToWarehouse, // NOSONAR
-            StockTransferLines = request.Lines.Select(l => new
-            {
-                l.ItemCode,
-                l.Quantity,
-                FromWarehouseCode = request.FromWarehouse,
-                WarehouseCode = request.ToWarehouse,
-                l.ProjectCode
-            })
-        }, JsonOptions);
-
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "StockTransfers", payload, ct);
-        return ParseDocumentResult(json);
-    }
-
-    public async Task<DocumentCreatedResult> CreateStockTransferTestAsync(CreateStockTransferRequest request, CancellationToken ct = default)
+    public async Task<DocumentCreatedResult> CreateStockTransferTestAsync(CreateStockTransferTestRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(_settings.TestCompanyDb))
         {
@@ -85,54 +60,30 @@ internal sealed class SapGateway : ISapGateway
 
         var payload = JsonSerializer.Serialize(new
         {
-            DocDate = request.DocDate.ToString("yyyy-MM-dd"), // NOSONAR
+            request.DocObjectCode,
+            request.CardCode,
+            request.DocDate, // NOSONAR
+            request.TaxDate,
             request.Comments,
-            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
-            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
-            PriceList = -2,
             FromWarehouse = request.FromWarehouse, // NOSONAR
             ToWarehouse = request.ToWarehouse, // NOSONAR
-            StockTransferLines = request.Lines.Select(l => new
+            request.U_ORIGEN,
+            request.Series,
+            // PriceList -2 = "Último precio determinado" (config SAP) si el cliente no lo especifica.
+            PriceList = request.PriceList ?? -2,
+            StockTransferLines = request.StockTransferLines.Select(l => new
             {
+                l.BaseType,
+                l.BaseEntry,
+                l.BaseLine,
                 l.ItemCode,
                 l.Quantity,
-                FromWarehouseCode = request.FromWarehouse,
-                WarehouseCode = request.ToWarehouse,
-                l.ProjectCode
+                l.WarehouseCode
             })
         }, JsonOptions);
 
         var json = await ExecuteWithRetryOn401Async(
             HttpMethod.Post, "StockTransfers", payload, ct, _settings.TestCompanyDb, _settings.TestPassword);
-        return ParseDocumentResult(json);
-    }
-
-    public async Task<DocumentCreatedResult> CreateStockTransferWithBinsAsync(CreateStockTransferWithBinsRequest request, CancellationToken ct = default)
-    {
-        var payload = JsonSerializer.Serialize(new
-        {
-            DocDate = request.DocDate.ToString("yyyy-MM-dd"),
-            request.Comments,
-            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
-            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
-            PriceList = -2,
-            FromWarehouse = request.FromWarehouse, // NOSONAR
-            ToWarehouse = request.ToWarehouse, // NOSONAR
-            StockTransferLines = request.Lines.Select(l => new
-            {
-                l.ItemCode,
-                l.Quantity,
-                FromWarehouseCode = request.FromWarehouse,
-                WarehouseCode = request.ToWarehouse,
-                BinAllocations = new[]
-                {
-                    new { BinAbsEntry = l.FromBinCode, Quantity = l.Quantity, AllocationMethod = "bamByBinCode", BinActionType = "batFromWarehouse" }, // NOSONAR
-                    new { BinAbsEntry = l.ToBinCode, Quantity = l.Quantity, AllocationMethod = "bamByBinCode", BinActionType = "batToWarehouse" } // NOSONAR
-                }
-            })
-        }, JsonOptions);
-
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "StockTransfers", payload, ct);
         return ParseDocumentResult(json);
     }
 

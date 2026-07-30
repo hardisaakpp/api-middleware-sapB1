@@ -27,12 +27,8 @@ public sealed class StockTransferControllerTests : IClassFixture<WebApplicationF
                 }
 
                 var mock = new Mock<ISapGateway>();
-                mock.Setup(g => g.CreateStockTransferAsync(
-                        It.IsAny<CreateStockTransferRequest>(),
-                        It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(new DocumentCreatedResult(42, 1001));
                 mock.Setup(g => g.CreateStockTransferTestAsync(
-                        It.IsAny<CreateStockTransferRequest>(),
+                        It.IsAny<CreateStockTransferTestRequest>(),
                         It.IsAny<CancellationToken>()))
                     .ReturnsAsync(new DocumentCreatedResult(44, 1003));
 
@@ -42,52 +38,22 @@ public sealed class StockTransferControllerTests : IClassFixture<WebApplicationF
     }
 
     [Fact]
-    public async Task Post_StockTransfer_Returns201WithDocumentNumbers()
-    {
-        var client = _factory.CreateClient();
-
-        var request = new CreateStockTransferRequest(
-            FromWarehouse: "WH01",
-            ToWarehouse: "WH02",
-            DocDate: new DateOnly(2024, 6, 1),
-            Comments: null,
-            Lines: [new StockTransferLineDto("ITEM001", 10m)]
-        );
-
-        var response = await client.PostAsJsonAsync("/api/v1/stock-transfers", request);
-
-        response.StatusCode.Should().Be(HttpStatusCode.Created);
-
-        var body = await response.Content.ReadFromJsonAsync<StockTransferResult>();
-        body!.DocEntry.Should().Be(42);
-        body.DocNum.Should().Be(1001);
-    }
-
-    [Fact]
-    public async Task Post_StockTransfer_SetsCorrelationIdHeader()
-    {
-        var client = _factory.CreateClient();
-
-        var request = new CreateStockTransferRequest(
-            "WH01", "WH02", new DateOnly(2024, 6, 1), null,
-            [new StockTransferLineDto("ITEM001", 5m)]);
-
-        var response = await client.PostAsJsonAsync("/api/v1/stock-transfers", request);
-
-        response.Headers.Should().ContainKey("X-Correlation-Id");
-    }
-
-    [Fact]
     public async Task Post_StockTransferTest_Returns201WithDocumentNumbers()
     {
         var client = _factory.CreateClient();
 
-        var request = new CreateStockTransferRequest(
+        var request = new CreateStockTransferTestRequest(
+            DocObjectCode: null,
+            CardCode: null,
+            DocDate: "2024-06-01",
+            TaxDate: null,
+            Comments: null,
             FromWarehouse: "WH01",
             ToWarehouse: "WH02",
-            DocDate: new DateOnly(2024, 6, 1),
-            Comments: null,
-            Lines: [new StockTransferLineDto("ITEM001", 10m)]
+            U_ORIGEN: null,
+            Series: null,
+            PriceList: null,
+            StockTransferLines: [new StockTransferTestLineDto(null, null, null, "ITEM001", 10m, "WH02")]
         );
 
         var response = await client.PostAsJsonAsync("/api/v1/stock-transfers/test", request);
@@ -97,6 +63,30 @@ public sealed class StockTransferControllerTests : IClassFixture<WebApplicationF
         var body = await response.Content.ReadFromJsonAsync<StockTransferResult>();
         body!.DocEntry.Should().Be(44);
         body.DocNum.Should().Be(1003);
+    }
+
+    [Fact]
+    public async Task Post_StockTransferTest_SetsCorrelationIdHeader()
+    {
+        var client = _factory.CreateClient();
+
+        var request = new CreateStockTransferTestRequest(
+            DocObjectCode: null,
+            CardCode: null,
+            DocDate: "2024-06-01",
+            TaxDate: null,
+            Comments: null,
+            FromWarehouse: "WH01",
+            ToWarehouse: "WH02",
+            U_ORIGEN: null,
+            Series: null,
+            PriceList: null,
+            StockTransferLines: [new StockTransferTestLineDto(null, null, null, "ITEM001", 5m, "WH02")]
+        );
+
+        var response = await client.PostAsJsonAsync("/api/v1/stock-transfers/test", request);
+
+        response.Headers.Should().ContainKey("X-Correlation-Id");
     }
 
     private sealed record StockTransferResult(int DocEntry, int DocNum);

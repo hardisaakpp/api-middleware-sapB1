@@ -5,7 +5,7 @@ using Middleware.Application.Dtos.Responses;
 
 namespace Middleware.Application.UseCases.StockTransfer;
 
-public sealed class CreateStockTransferTestUseCase : IUseCase<CreateStockTransferRequest, StockTransferResponse>
+public sealed class CreateStockTransferTestUseCase : IUseCase<CreateStockTransferTestRequest, StockTransferResponse>
 {
     private readonly ISapGateway _gateway;
     private readonly ILogger<CreateStockTransferTestUseCase> _logger;
@@ -16,11 +16,11 @@ public sealed class CreateStockTransferTestUseCase : IUseCase<CreateStockTransfe
         _logger = logger;
     }
 
-    public async Task<StockTransferResponse> ExecuteAsync(CreateStockTransferRequest request, CancellationToken cancellationToken = default)
+    public async Task<StockTransferResponse> ExecuteAsync(CreateStockTransferTestRequest request, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation(
             "Creating StockTransfer (test CompanyDB) from {FromWarehouse} to {ToWarehouse} with {LineCount} lines",
-            request.FromWarehouse, request.ToWarehouse, request.Lines.Count);
+            request.FromWarehouse, request.ToWarehouse, request.StockTransferLines.Count);
 
         var result = await _gateway.CreateStockTransferTestAsync(request, cancellationToken);
 
