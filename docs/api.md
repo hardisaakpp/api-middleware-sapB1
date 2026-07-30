@@ -201,9 +201,189 @@ Actualiza el campo de usuario `U_STATUS` de una solicitud de transferencia de in
 
 ## Transferencias de Stock (Stock Transfers)
 
-### POST /stock-transfers
+`POST /stock-transfers/based-on-document`, `POST /stock-transfers/direct` y
+`POST /stock-transfers/with-bins` inician sesión en SAP contra `Sap:TestCompanyDb` /
+`Sap:TestPassword` (nunca `Sap:CompanyDb`) — cuál base real es esa (test o producción) lo decide
+la variable de entorno del deploy, no el código.
 
-Crea una transferencia de stock entre almacenes en SAP (`StockTransfers`).
+### POST /stock-transfers/based-on-document
+
+Crea una transferencia de stock (`StockTransfers`) referenciando un documento base por línea
+(`baseType`/`baseEntry`/`baseLine`, ej. una solicitud de transferencia u orden de compra ya
+existente en SAP).
+
+**Cuerpo del request**
+
+```json
+{
+  "docObjectCode": "67",
+  "cardCode": null,
+  "docDate": "2024-06-15",
+  "taxDate": null,
+  "comments": "Reposición mensual",
+  "fromWarehouse": "WH01",
+  "toWarehouse": "WH02",
+  "u_ORIGEN": null,
+  "series": null,
+  "priceList": null,
+  "stockTransferLines": [
+    {
+      "baseType": 1250000001,
+      "baseEntry": 123,
+      "baseLine": 0,
+      "itemCode": "ITEM-001",
+      "quantity": 5.0,
+      "warehouseCode": "WH02"
+    }
+  ]
+}
+```
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `docObjectCode` | string | — | Opcional |
+| `cardCode` | string | — | Opcional |
+| `docDate` | string | ✓ | NotEmpty, formato `yyyy-MM-dd` |
+| `taxDate` | string | — | Opcional |
+| `comments` | string | — | Opcional |
+| `fromWarehouse` | string | ✓ | NotEmpty, max 8 chars, distinto de `toWarehouse` |
+| `toWarehouse` | string | ✓ | NotEmpty, max 8 chars |
+| `u_ORIGEN` | string | — | Opcional |
+| `series` | int | — | Opcional |
+| `priceList` | int | — | Opcional (default SAP: -2, "Último precio determinado") |
+| `stockTransferLines` | array | ✓ | Al menos un elemento |
+| `stockTransferLines[].baseType` | int | — | Opcional |
+| `stockTransferLines[].baseEntry` | int | — | Opcional |
+| `stockTransferLines[].baseLine` | int | — | Opcional |
+| `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
+| `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
+| `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+
+**Respuesta exitosa — 201 Created**
+
+```json
+{
+  "docEntry": 42,
+  "docNum": 1001
+}
+```
+
+---
+
+### POST /stock-transfers/direct
+
+Crea una transferencia de stock (`StockTransfers`) directa entre almacenes, sin referenciar
+ningún documento base. Mismo cuerpo que `/based-on-document` pero sin `baseType`/`baseEntry`/
+`baseLine` por línea.
+
+**Cuerpo del request**
+
+```json
+{
+  "docObjectCode": null,
+  "cardCode": null,
+  "docDate": "2024-06-15",
+  "taxDate": null,
+  "comments": "Reposición mensual",
+  "fromWarehouse": "WH01",
+  "toWarehouse": "WH02",
+  "u_ORIGEN": null,
+  "series": null,
+  "priceList": null,
+  "stockTransferLines": [
+    {
+      "itemCode": "ITEM-001",
+      "quantity": 5.0,
+      "warehouseCode": "WH02"
+    }
+  ]
+}
+```
+
+Mismas validaciones que `/based-on-document` (menos las de `baseType`/`baseEntry`/`baseLine`,
+que no existen aquí).
+
+**Respuesta exitosa — 201 Created**
+
+```json
+{
+  "docEntry": 45,
+  "docNum": 1004
+}
+```
+
+---
+
+### POST /stock-transfers/with-bins
+
+Crea una transferencia de stock (`StockTransfers`) con asignación de ubicaciones (bins) por
+línea. Cubre los 4 combos posibles de bodega origen/destino con o sin ubicaciones habilitadas:
+el array `stockTransferLinesBinAllocations` es opcional y por línea, así que si un lado no
+maneja bins simplemente no se le manda ninguna entrada (puede traer solo entradas de un lado,
+de ambos, o ninguna).
+
+**Cuerpo del request**
+
+```json
+{
+  "docObjectCode": null,
+  "cardCode": null,
+  "docDate": "2024-06-15",
+  "taxDate": null,
+  "comments": "Reposición mensual",
+  "fromWarehouse": "WH01",
+  "toWarehouse": "WH02",
+  "u_ORIGEN": null,
+  "series": null,
+  "priceList": null,
+  "stockTransferLines": [
+    {
+      "baseType": null,
+      "baseEntry": null,
+      "baseLine": null,
+      "itemCode": "ITEM-001",
+      "quantity": 10.0,
+      "warehouseCode": "WH02",
+      "stockTransferLinesBinAllocations": [
+        { "binAbsEntry": 5, "quantity": 10.0, "binActionType": 2 },
+        { "binAbsEntry": 9, "quantity": 10.0, "binActionType": 1 }
+      ]
+    }
+  ]
+}
+```
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `docObjectCode`, `cardCode`, `taxDate`, `u_ORIGEN`, `series`, `priceList` | — | — | Opcionales, igual que en `/based-on-document` |
+| `docDate` | string | ✓ | NotEmpty, formato `yyyy-MM-dd` |
+| `fromWarehouse` / `toWarehouse` | string | ✓ | NotEmpty, max 8 chars, distintos entre sí |
+| `stockTransferLines` | array | ✓ | Al menos un elemento |
+| `stockTransferLines[].baseType/baseEntry/baseLine` | int | — | Opcionales (referencia a documento base) |
+| `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
+| `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
+| `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+| `stockTransferLines[].stockTransferLinesBinAllocations` | array | — | Opcional; omitir si esa bodega no tiene bins |
+| `...binAllocations[].binAbsEntry` | int | ✓ (si se manda el array) | > 0 |
+| `...binAllocations[].quantity` | decimal | ✓ (si se manda el array) | > 0 |
+| `...binAllocations[].binActionType` | int | ✓ (si se manda el array) | `1` = Entrada (bin destino) o `2` = Salida (bin origen) — se mapea a `batToWarehouse`/`batFromWarehouse` de SAP |
+
+**Respuesta exitosa — 201 Created**
+
+```json
+{
+  "docEntry": 46,
+  "docNum": 1005
+}
+```
+
+---
+
+### POST /stock-transfers/requests
+
+Crea una solicitud de transferencia de stock (`InventoryTransferRequests`) sin moverla. Inicia
+sesión contra `Sap:CompanyDb` (producción) — **consumido en vivo por `mba3-consultas`, no
+cambiar su contrato sin coordinar** (ver `docs/CONTRATO_MIDDLEWARE.md`).
 
 **Cuerpo del request**
 
@@ -238,61 +418,10 @@ Crea una transferencia de stock entre almacenes en SAP (`StockTransfers`).
 
 ```json
 {
-  "docEntry": 42,
-  "docNum": 1001
-}
-```
-
----
-
-### POST /stock-transfers/with-bins
-
-Crea una transferencia de stock con asignación de bins (ubicaciones de almacén).
-
-**Cuerpo del request**
-
-```json
-{
-  "fromWarehouse": "WH01",
-  "toWarehouse": "WH02",
-  "docDate": "2024-06-15",
-  "comments": null,
-  "lines": [
-    {
-      "itemCode": "ITEM-001",
-      "quantity": 5.0,
-      "fromBinCode": 10,
-      "toBinCode": 25
-    }
-  ]
-}
-```
-
-Los campos `fromBinCode` y `toBinCode` son los `BinAbsEntry` de SAP (entero, no el código visual).
-
-**Respuesta exitosa — 201 Created**
-
-```json
-{
   "docEntry": 43,
   "docNum": 1002
 }
 ```
-
----
-
-### POST /stock-transfers/requests
-
-Crea una solicitud de transferencia de stock (`InventoryTransferRequests`) sin moverla.  
-Mismo cuerpo y respuesta que `POST /stock-transfers`.
-
----
-
-### POST /stock-transfers/test
-
-Mismo cuerpo, validación y respuesta que `POST /stock-transfers` (sin bins/ubicaciones), pero
-inicia sesión en SAP contra `Sap:TestCompanyDb` en lugar de `Sap:CompanyDb`. Pensado para probar
-el flujo de transferencias sin tocar la base de producción.
 
 ---
 

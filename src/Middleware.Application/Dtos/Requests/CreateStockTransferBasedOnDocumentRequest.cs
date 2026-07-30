@@ -2,7 +2,7 @@ using FluentValidation;
 
 namespace Middleware.Application.Dtos.Requests;
 
-public sealed record CreateStockTransferTestRequest(
+public sealed record CreateStockTransferBasedOnDocumentRequest(
     string? DocObjectCode,
     string? CardCode,
     string DocDate,
@@ -13,10 +13,10 @@ public sealed record CreateStockTransferTestRequest(
     string? U_ORIGEN,
     int? Series,
     int? PriceList,
-    IReadOnlyList<StockTransferTestLineDto> StockTransferLines
+    IReadOnlyList<StockTransferBasedOnDocumentLineDto> StockTransferLines
 );
 
-public sealed record StockTransferTestLineDto(
+public sealed record StockTransferBasedOnDocumentLineDto(
     int? BaseType,
     int? BaseEntry,
     int? BaseLine,
@@ -25,9 +25,9 @@ public sealed record StockTransferTestLineDto(
     string WarehouseCode
 );
 
-public sealed class CreateStockTransferTestRequestValidator : AbstractValidator<CreateStockTransferTestRequest>
+public sealed class CreateStockTransferBasedOnDocumentRequestValidator : AbstractValidator<CreateStockTransferBasedOnDocumentRequest>
 {
-    public CreateStockTransferTestRequestValidator()
+    public CreateStockTransferBasedOnDocumentRequestValidator()
     {
         RuleFor(x => x.DocDate).NotEmpty();
         RuleFor(x => x.FromWarehouse).NotEmpty().MaximumLength(8);

@@ -5,8 +5,14 @@ namespace Middleware.Application.Abstractions;
 
 public interface ISapGateway
 {
-    /// <summary>Logs in against Sap:TestCompanyDb / Sap:TestPassword (never Sap:CompanyDb) — the only stock-transfer write endpoint besides /requests.</summary>
-    public Task<DocumentCreatedResult> CreateStockTransferTestAsync(CreateStockTransferTestRequest request, CancellationToken ct = default);
+    /// <summary>Transfer with per-line BaseType/BaseEntry/BaseLine (referencing a source document). Logs in against Sap:TestCompanyDb / Sap:TestPassword.</summary>
+    public Task<DocumentCreatedResult> CreateStockTransferBasedOnDocumentAsync(CreateStockTransferBasedOnDocumentRequest request, CancellationToken ct = default);
+
+    /// <summary>Plain warehouse-to-warehouse transfer, no base-document reference. Logs in against Sap:TestCompanyDb / Sap:TestPassword.</summary>
+    public Task<DocumentCreatedResult> CreateStockTransferDirectAsync(CreateStockTransferDirectRequest request, CancellationToken ct = default);
+
+    /// <summary>Transfer with per-line bin allocations (0, 1 or both sides, depending on which warehouse has bins enabled). Logs in against Sap:TestCompanyDb / Sap:TestPassword.</summary>
+    public Task<DocumentCreatedResult> CreateStockTransferWithBinsAsync(CreateStockTransferWithBinsRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateStockTransferRequestAsync(CreateStockTransferRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateDepositAsync(CreateDepositRequest request, string companyDb, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateGoodsReceiptAsync(CreateGoodsReceiptRequest request, CancellationToken ct = default);

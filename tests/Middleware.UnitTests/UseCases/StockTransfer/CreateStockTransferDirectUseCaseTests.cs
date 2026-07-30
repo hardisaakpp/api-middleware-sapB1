@@ -7,20 +7,20 @@ using Middleware.Application.UseCases.StockTransfer;
 
 namespace Middleware.UnitTests.UseCases.StockTransfer;
 
-public sealed class CreateStockTransferTestUseCaseTests
+public sealed class CreateStockTransferDirectUseCaseTests
 {
     private readonly Mock<ISapGateway> _gatewayMock = new();
-    private readonly CreateStockTransferTestUseCase _sut;
+    private readonly CreateStockTransferDirectUseCase _sut;
 
-    public CreateStockTransferTestUseCaseTests()
+    public CreateStockTransferDirectUseCaseTests()
     {
-        _sut = new CreateStockTransferTestUseCase(_gatewayMock.Object, NullLogger<CreateStockTransferTestUseCase>.Instance);
+        _sut = new CreateStockTransferDirectUseCase(_gatewayMock.Object, NullLogger<CreateStockTransferDirectUseCase>.Instance);
     }
 
     [Fact]
     public async Task ExecuteAsync_ValidRequest_ReturnsDocumentNumbers()
     {
-        var request = new CreateStockTransferTestRequest(
+        var request = new CreateStockTransferDirectRequest(
             DocObjectCode: null,
             CardCode: null,
             DocDate: "2024-06-01",
@@ -31,11 +31,11 @@ public sealed class CreateStockTransferTestUseCaseTests
             U_ORIGEN: null,
             Series: null,
             PriceList: null,
-            StockTransferLines: [new StockTransferTestLineDto(null, null, null, "ITEM001", 10m, "WH02")]
+            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 10m, "WH02")]
         );
 
         _gatewayMock
-            .Setup(g => g.CreateStockTransferTestAsync(request, It.IsAny<CancellationToken>()))
+            .Setup(g => g.CreateStockTransferDirectAsync(request, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DocumentCreatedResult(42, 1001));
 
         var result = await _sut.ExecuteAsync(request);
@@ -48,7 +48,7 @@ public sealed class CreateStockTransferTestUseCaseTests
     [Fact]
     public async Task ExecuteAsync_GatewayThrows_PropagatesException()
     {
-        var request = new CreateStockTransferTestRequest(
+        var request = new CreateStockTransferDirectRequest(
             DocObjectCode: null,
             CardCode: null,
             DocDate: "2024-06-01",
@@ -59,11 +59,11 @@ public sealed class CreateStockTransferTestUseCaseTests
             U_ORIGEN: null,
             Series: null,
             PriceList: null,
-            StockTransferLines: [new StockTransferTestLineDto(null, null, null, "ITEM001", 5m, "WH02")]
+            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 5m, "WH02")]
         );
 
         _gatewayMock
-            .Setup(g => g.CreateStockTransferTestAsync(request, It.IsAny<CancellationToken>()))
+            .Setup(g => g.CreateStockTransferDirectAsync(request, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("SAP unavailable"));
 
         var act = () => _sut.ExecuteAsync(request);

@@ -46,17 +46,9 @@ internal sealed class SapGateway : ISapGateway
         _logger = logger;
     }
 
-    public async Task<DocumentCreatedResult> CreateStockTransferTestAsync(CreateStockTransferTestRequest request, CancellationToken ct = default)
+    public async Task<DocumentCreatedResult> CreateStockTransferBasedOnDocumentAsync(CreateStockTransferBasedOnDocumentRequest request, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_settings.TestCompanyDb))
-        {
-            throw new InvalidOperationException("Sap:TestCompanyDb no está configurado.");
-        }
-
-        if (string.IsNullOrWhiteSpace(_settings.TestPassword))
-        {
-            throw new InvalidOperationException("Sap:TestPassword no está configurado.");
-        }
+        EnsureTestCredentialsConfigured();
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -85,6 +77,92 @@ internal sealed class SapGateway : ISapGateway
         var json = await ExecuteWithRetryOn401Async(
             HttpMethod.Post, "StockTransfers", payload, ct, _settings.TestCompanyDb, _settings.TestPassword);
         return ParseDocumentResult(json);
+    }
+
+    public async Task<DocumentCreatedResult> CreateStockTransferDirectAsync(CreateStockTransferDirectRequest request, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            request.DocObjectCode,
+            request.CardCode,
+            request.DocDate, // NOSONAR
+            request.TaxDate,
+            request.Comments,
+            FromWarehouse = request.FromWarehouse, // NOSONAR
+            ToWarehouse = request.ToWarehouse, // NOSONAR
+            request.U_ORIGEN,
+            request.Series,
+            // PriceList -2 = "Último precio determinado" (config SAP) si el cliente no lo especifica.
+            PriceList = request.PriceList ?? -2,
+            StockTransferLines = request.StockTransferLines.Select(l => new
+            {
+                l.ItemCode,
+                l.Quantity,
+                l.WarehouseCode
+            })
+        }, JsonOptions);
+
+        var json = await ExecuteWithRetryOn401Async(
+            HttpMethod.Post, "StockTransfers", payload, ct, _settings.TestCompanyDb, _settings.TestPassword);
+        return ParseDocumentResult(json);
+    }
+
+    public async Task<DocumentCreatedResult> CreateStockTransferWithBinsAsync(CreateStockTransferWithBinsRequest request, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            request.DocObjectCode,
+            request.CardCode,
+            request.DocDate, // NOSONAR
+            request.TaxDate,
+            request.Comments,
+            FromWarehouse = request.FromWarehouse, // NOSONAR
+            ToWarehouse = request.ToWarehouse, // NOSONAR
+            request.U_ORIGEN,
+            request.Series,
+            // PriceList -2 = "Último precio determinado" (config SAP) si el cliente no lo especifica.
+            PriceList = request.PriceList ?? -2,
+            StockTransferLines = request.StockTransferLines.Select(l => new
+            {
+                l.BaseType,
+                l.BaseEntry,
+                l.BaseLine,
+                l.ItemCode,
+                l.Quantity,
+                l.WarehouseCode,
+                // Null si esa línea no trae bins (bodega sin ubicaciones en ese lado) — con
+                // DefaultIgnoreCondition.WhenWritingNull el campo se omite del payload a SAP.
+                StockTransferLinesBinAllocations = l.StockTransferLinesBinAllocations?.Select(b => new
+                {
+                    b.BinAbsEntry,
+                    b.Quantity,
+                    AllocationMethod = "bamByBinCode",
+                    // 1 = Entrada (bin destino) → batToWarehouse; 2 = Salida (bin origen) → batFromWarehouse.
+                    BinActionType = b.BinActionType == 1 ? "batToWarehouse" : "batFromWarehouse" // NOSONAR
+                })
+            })
+        }, JsonOptions);
+
+        var json = await ExecuteWithRetryOn401Async(
+            HttpMethod.Post, "StockTransfers", payload, ct, _settings.TestCompanyDb, _settings.TestPassword);
+        return ParseDocumentResult(json);
+    }
+
+    private void EnsureTestCredentialsConfigured()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.TestCompanyDb))
+        {
+            throw new InvalidOperationException("Sap:TestCompanyDb no está configurado.");
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.TestPassword))
+        {
+            throw new InvalidOperationException("Sap:TestPassword no está configurado.");
+        }
     }
 
     public async Task<DocumentCreatedResult> CreateStockTransferRequestAsync(CreateStockTransferRequest request, CancellationToken ct = default)
