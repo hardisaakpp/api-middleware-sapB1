@@ -2,9 +2,11 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
+using Middleware.Infrastructure.Configuration;
 using Polly.Timeout;
 
 namespace Middleware.Infrastructure.Sap;
@@ -15,6 +17,7 @@ internal sealed class SapGateway : ISapGateway
     private readonly ISapServiceLayerClient _client;
     private readonly SapThrottle _throttle;
     private readonly ItemGroupsCache _itemGroupsCache;
+    private readonly SapSettings _settings;
     private readonly ILogger<SapGateway> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -32,12 +35,14 @@ internal sealed class SapGateway : ISapGateway
         ISapServiceLayerClient client,
         SapThrottle throttle,
         ItemGroupsCache itemGroupsCache,
+        IOptions<SapSettings> settings,
         ILogger<SapGateway> logger)
     {
         _sessionManager = sessionManager;
         _client = client;
         _throttle = throttle;
         _itemGroupsCache = itemGroupsCache;
+        _settings = settings.Value;
         _logger = logger;
     }
 
@@ -63,6 +68,42 @@ internal sealed class SapGateway : ISapGateway
         }, JsonOptions);
 
         var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "StockTransfers", payload, ct);
+        return ParseDocumentResult(json);
+    }
+
+    public async Task<DocumentCreatedResult> CreateStockTransferTestAsync(CreateStockTransferRequest request, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(_settings.TestCompanyDb))
+        {
+            throw new InvalidOperationException("Sap:TestCompanyDb no está configurado.");
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.TestPassword))
+        {
+            throw new InvalidOperationException("Sap:TestPassword no está configurado.");
+        }
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            DocDate = request.DocDate.ToString("yyyy-MM-dd"), // NOSONAR
+            request.Comments,
+            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
+            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
+            PriceList = -2,
+            FromWarehouse = request.FromWarehouse, // NOSONAR
+            ToWarehouse = request.ToWarehouse, // NOSONAR
+            StockTransferLines = request.Lines.Select(l => new
+            {
+                l.ItemCode,
+                l.Quantity,
+                FromWarehouseCode = request.FromWarehouse,
+                WarehouseCode = request.ToWarehouse,
+                l.ProjectCode
+            })
+        }, JsonOptions);
+
+        var json = await ExecuteWithRetryOn401Async(
+            HttpMethod.Post, "StockTransfers", payload, ct, _settings.TestCompanyDb, _settings.TestPassword);
         return ParseDocumentResult(json);
     }
 
@@ -896,12 +937,18 @@ internal sealed class SapGateway : ISapGateway
         return warehouses;
     }
 
-    private async Task<string> ExecuteWithRetryOn401Async(HttpMethod method, string resource, string? payload, CancellationToken ct)
+    private Task<string> ExecuteWithRetryOn401Async(HttpMethod method, string resource, string? payload, CancellationToken ct)
+        => ExecuteWithRetryOn401Async(method, resource, payload, ct, companyDb: null, password: null);
+
+    private async Task<string> ExecuteWithRetryOn401Async(
+        HttpMethod method, string resource, string? payload, CancellationToken ct, string? companyDb, string? password)
     {
         await _throttle.WaitAsync(ct);
         try
         {
-            var token = await _sessionManager.GetSessionTokenAsync(ct);
+            var token = companyDb is null
+                ? await _sessionManager.GetSessionTokenAsync(ct)
+                : await _sessionManager.GetSessionTokenAsync(companyDb, password!, ct);
             try
             {
                 return await _client.SendAsync(method, resource, payload, token, ct);
@@ -909,8 +956,17 @@ internal sealed class SapGateway : ISapGateway
             catch (SapException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized)
             {
                 _logger.LogWarning("SAP returned 401 for {Resource}. Invalidating session and retrying once.", resource); // NOSONAR
-                await _sessionManager.InvalidateSessionAsync(ct);
-                var newToken = await _sessionManager.GetSessionTokenAsync(ct);
+                if (companyDb is null)
+                {
+                    await _sessionManager.InvalidateSessionAsync(ct);
+                }
+                else
+                {
+                    await _sessionManager.InvalidateSessionAsync(companyDb, ct);
+                }
+                var newToken = companyDb is null
+                    ? await _sessionManager.GetSessionTokenAsync(ct)
+                    : await _sessionManager.GetSessionTokenAsync(companyDb, password!, ct);
                 return await _client.SendAsync(method, resource, payload, newToken, ct);
             }
         }

@@ -75,6 +75,32 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         };
     }
 
+    [HttpPost("test")]
+    [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> CreateTest(
+        [FromBody] CreateStockTransferRequest request,
+        CancellationToken cancellationToken)
+    {
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "CreateStockTransferTest",
+            "POST /api/v1/stock-transfers/test",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<CreateStockTransferTestUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.Created,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(CreateTest), c.Response),
+            JobQueued<StockTransferResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
     [HttpPost("requests")]
     [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]

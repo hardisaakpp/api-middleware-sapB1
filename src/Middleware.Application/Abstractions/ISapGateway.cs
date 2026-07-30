@@ -6,6 +6,9 @@ namespace Middleware.Application.Abstractions;
 public interface ISapGateway
 {
     public Task<DocumentCreatedResult> CreateStockTransferAsync(CreateStockTransferRequest request, CancellationToken ct = default);
+
+    /// <summary>Same as <see cref="CreateStockTransferAsync"/>, but always logs in against Sap:TestCompanyDb instead of Sap:CompanyDb.</summary>
+    public Task<DocumentCreatedResult> CreateStockTransferTestAsync(CreateStockTransferRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateStockTransferWithBinsAsync(CreateStockTransferWithBinsRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateStockTransferRequestAsync(CreateStockTransferRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateDepositAsync(CreateDepositRequest request, string companyDb, CancellationToken ct = default);

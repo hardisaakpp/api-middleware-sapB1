@@ -288,6 +288,14 @@ Mismo cuerpo y respuesta que `POST /stock-transfers`.
 
 ---
 
+### POST /stock-transfers/test
+
+Mismo cuerpo, validación y respuesta que `POST /stock-transfers` (sin bins/ubicaciones), pero
+inicia sesión en SAP contra `Sap:TestCompanyDb` en lugar de `Sap:CompanyDb`. Pensado para probar
+el flujo de transferencias sin tocar la base de producción.
+
+---
+
 ## Entradas de Mercancía (Goods Receipts)
 
 ### POST /goods-receipts

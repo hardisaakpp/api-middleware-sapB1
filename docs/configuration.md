@@ -25,7 +25,8 @@ Controla la conexión con SAP Business One Service Layer.
 |---|---|---|---|
 | `Sap:BaseUrl` | string | — | URL base del Service Layer. Debe terminar en `/`. Ej: `http://10.0.0.1:50001/b1s/v1/` |
 | `Sap:CompanyDb` | string | — | Base de datos de la empresa SAP (producción). Ej: `SBO_MI_EMPRESA` |
-| `Sap:TestCompanyDb` | string | — | Base de datos de empresa SAP para pruebas. Usado por depósitos con `Environment=Test` |
+| `Sap:TestCompanyDb` | string | — | Base de datos de empresa SAP para pruebas. Usado por depósitos con `Environment=Test` y por `POST /stock-transfers/test` |
+| `Sap:TestPassword` | string | — | Password de `Sap:UserName` en `Sap:TestCompanyDb`. Los usuarios de SAP B1 son por CompanyDB, así que puede diferir de `Sap:Password` aunque el usuario sea el mismo |
 | `Sap:UserName` | string | — | Usuario del Service Layer |
 | `Sap:Password` | string | — | Contraseña del usuario SAP |
 | `Sap:TimeoutSeconds` | int | `30` | Timeout de cada llamada HTTP a SAP (segundos) |
