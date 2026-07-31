@@ -382,37 +382,42 @@ de ambos, o ninguna).
 ### POST /stock-transfers/requests
 
 Crea una solicitud de transferencia de stock (`InventoryTransferRequests`) sin moverla. Inicia
-sesión contra `Sap:CompanyDb` (producción) — **consumido en vivo por `mba3-consultas`, no
-cambiar su contrato sin coordinar** (ver `docs/CONTRATO_MIDDLEWARE.md`).
+sesión contra `Sap:CompanyDb` (producción) — **consumido en vivo por el módulo de reposición de
+mercadería, no cambiar su contrato sin coordinar con ese módulo** (ver `docs/CONTRATO_MIDDLEWARE.md`).
 
 **Cuerpo del request**
 
 ```json
 {
-  "fromWarehouse": "WH01",
-  "toWarehouse": "WH02",
-  "docDate": "2024-06-15",
-  "comments": "Reposición mensual",
-  "lines": [
+  "fromWarehouse": "OUT-CD",
+  "toWarehouse": "TOUT-BMB",
+  "u_ORIGEN": "C",
+  "comments": "CUIDADO ORAL",
+  "series": 10133,
+  "stockTransferLines": [
     {
-      "itemCode": "ITEM-001",
-      "quantity": 5.0,
-      "projectCode": "PROJ-A"
+      "itemCode": "SKBLZ0147",
+      "quantity": 24.0,
+      "warehouseCode": "TOUT-BMB"
     }
   ]
 }
 ```
 
+`docDate` ya no se recibe del cliente — el middleware lo completa internamente con la fecha
+actual al armar el payload hacia SAP.
+
 | Campo | Tipo | Requerido | Validación |
 |---|---|---|---|
 | `fromWarehouse` | string | ✓ | NotEmpty, max 8 chars, distinto de `toWarehouse` |
 | `toWarehouse` | string | ✓ | NotEmpty, max 8 chars |
-| `docDate` | `DateOnly` | ✓ | Formato `yyyy-MM-dd` |
+| `u_ORIGEN` | string | ✓ | NotEmpty |
 | `comments` | string | — | Opcional |
-| `lines` | array | ✓ | Al menos un elemento |
-| `lines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
-| `lines[].quantity` | decimal | ✓ | > 0 |
-| `lines[].projectCode` | string | — | Opcional |
+| `series` | int | ✓ | > 0 |
+| `stockTransferLines` | array | ✓ | Al menos un elemento |
+| `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
+| `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
+| `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
 
 **Respuesta exitosa — 201 Created**
 

@@ -169,28 +169,17 @@ internal sealed class SapGateway : ISapGateway
     {
         var payload = JsonSerializer.Serialize(new
         {
-            DocDate = request.DocDate.ToString("yyyy-MM-dd"),
+            DocDate = DateTime.Now.ToString("yyyy-MM-dd"), // NOSONAR
             request.Comments,
-            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
-            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
-            PriceList = -2,
             FromWarehouse = request.FromWarehouse,
             ToWarehouse = request.ToWarehouse,
-            // U_ODC (UDF con el nº de OC de origen) y Series los incluye el payload del flujo
-            // Python que sí funciona. U_ODC es el candidato más probable del error 1299
-            // "no data found" de la TN custom (hace lookup contra la OC). Se omiten solos si
-            // el request no los trae (WhenWritingNull).
-            U_ODC = request.UOdc,
+            request.U_ORIGEN,
             Series = request.Series,
-            // ITR: la bodega va SOLO en la cabecera (FromWarehouse/ToWarehouse). A nivel de
-            // línea solo ItemCode y Quantity, replicando exactamente el payload del flujo
-            // Python que sí funcionaba. Los campos de bodega por línea (FromWarehouseCode/
-            // WarehouseCode, válidos en StockTransfers) NO se envían para un InventoryTransferRequest.
-            StockTransferLines = request.Lines.Select(l => new
+            StockTransferLines = request.StockTransferLines.Select(l => new
             {
                 l.ItemCode,
                 l.Quantity,
-                l.ProjectCode
+                l.WarehouseCode
             })
         }, JsonOptions);
 
