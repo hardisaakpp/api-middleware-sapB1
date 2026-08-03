@@ -8,6 +8,8 @@ namespace Middleware.Infrastructure.Sql;
 
 internal sealed class JobQueueRepository : IJobQueueRepository
 {
+    private const string StatusParam = "@status";
+
     private readonly SqlSettings _settings;
 
     public JobQueueRepository(IOptions<SqlSettings> settings) => _settings = settings.Value;
@@ -27,7 +29,7 @@ internal sealed class JobQueueRepository : IJobQueueRepository
         cmd.Parameters.AddWithValue("@endpoint", endpoint);
         cmd.Parameters.AddWithValue("@requestType", requestType);
         cmd.Parameters.AddWithValue("@requestPayload", requestPayloadJson);
-        cmd.Parameters.AddWithValue("@status", JobStatuses.Encolado);
+        cmd.Parameters.AddWithValue(StatusParam, JobStatuses.Encolado);
 
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -65,7 +67,7 @@ internal sealed class JobQueueRepository : IJobQueueRepository
 
         await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
         cmd.Parameters.AddWithValue("@id", jobId);
-        cmd.Parameters.AddWithValue("@status", JobStatuses.Completado);
+        cmd.Parameters.AddWithValue(StatusParam, JobStatuses.Completado);
         cmd.Parameters.AddWithValue("@httpStatusCode", httpStatusCode);
         cmd.Parameters.AddWithValue("@resultPayload", responsePayloadJson);
 
@@ -85,7 +87,7 @@ internal sealed class JobQueueRepository : IJobQueueRepository
 
         await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
         cmd.Parameters.AddWithValue("@id", jobId);
-        cmd.Parameters.AddWithValue("@status", JobStatuses.Error);
+        cmd.Parameters.AddWithValue(StatusParam, JobStatuses.Error);
         cmd.Parameters.AddWithValue("@errorMessage", errorMessage);
         cmd.Parameters.AddWithValue("@httpStatusCode", httpStatusCode);
 
@@ -105,7 +107,7 @@ internal sealed class JobQueueRepository : IJobQueueRepository
 
         await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
         cmd.Parameters.AddWithValue("@id", jobId);
-        cmd.Parameters.AddWithValue("@status", JobStatuses.Encolado);
+        cmd.Parameters.AddWithValue(StatusParam, JobStatuses.Encolado);
         cmd.Parameters.AddWithValue("@attempts", attempts);
         cmd.Parameters.AddWithValue("@nextRetryAt", nextRetryAt);
 
@@ -136,12 +138,12 @@ internal sealed class JobQueueRepository : IJobQueueRepository
             reader.GetGuid(0),
             reader.GetString(1),
             reader.GetString(2),
-            reader.IsDBNull(3) ? null : reader.GetInt32(3),
-            reader.IsDBNull(4) ? null : reader.GetString(4),
-            reader.IsDBNull(5) ? null : reader.GetString(5),
+            await reader.IsDBNullAsync(3, ct) ? null : reader.GetInt32(3),
+            await reader.IsDBNullAsync(4, ct) ? null : reader.GetString(4),
+            await reader.IsDBNullAsync(5, ct) ? null : reader.GetString(5),
             reader.GetInt32(6),
             reader.GetDateTime(7),
-            reader.IsDBNull(8) ? null : reader.GetDateTime(8)
+            await reader.IsDBNullAsync(8, ct) ? null : reader.GetDateTime(8)
         );
     }
 

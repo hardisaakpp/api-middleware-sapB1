@@ -11,7 +11,7 @@ public interface IJobExecutionCoordinator
         CancellationToken cancellationToken = default);
 }
 
-public abstract record JobExecutionOutcome<TResponse>;
+public abstract record JobExecutionOutcome<TResponse>; // NOSONAR: TResponse is the discriminator shared by JobCompleted/JobQueued below
 
 public sealed record JobCompleted<TResponse>(TResponse Response) : JobExecutionOutcome<TResponse>;
 

@@ -75,7 +75,7 @@ internal sealed class SapGateway : ISapGateway
         }, JsonOptions);
 
         var json = await ExecuteWithRetryOn401Async(
-            HttpMethod.Post, "StockTransfers", payload, ct, _settings.TestCompanyDb, _settings.TestPassword);
+            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
         return ParseDocumentResult(json);
     }
 
@@ -105,7 +105,7 @@ internal sealed class SapGateway : ISapGateway
         }, JsonOptions);
 
         var json = await ExecuteWithRetryOn401Async(
-            HttpMethod.Post, "StockTransfers", payload, ct, _settings.TestCompanyDb, _settings.TestPassword);
+            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
         return ParseDocumentResult(json);
     }
 
@@ -148,7 +148,7 @@ internal sealed class SapGateway : ISapGateway
         }, JsonOptions);
 
         var json = await ExecuteWithRetryOn401Async(
-            HttpMethod.Post, "StockTransfers", payload, ct, _settings.TestCompanyDb, _settings.TestPassword);
+            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
         return ParseDocumentResult(json);
     }
 
@@ -956,10 +956,10 @@ internal sealed class SapGateway : ISapGateway
     }
 
     private Task<string> ExecuteWithRetryOn401Async(HttpMethod method, string resource, string? payload, CancellationToken ct)
-        => ExecuteWithRetryOn401Async(method, resource, payload, ct, companyDb: null, password: null);
+        => ExecuteWithRetryOn401Async(method, resource, payload, companyDb: null, password: null, ct);
 
     private async Task<string> ExecuteWithRetryOn401Async(
-        HttpMethod method, string resource, string? payload, CancellationToken ct, string? companyDb, string? password)
+        HttpMethod method, string resource, string? payload, string? companyDb, string? password, CancellationToken ct)
     {
         await _throttle.WaitAsync(ct);
         try
