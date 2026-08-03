@@ -2,9 +2,11 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
+using Middleware.Infrastructure.Configuration;
 using Polly.Timeout;
 
 namespace Middleware.Infrastructure.Sap;
@@ -15,6 +17,7 @@ internal sealed class SapGateway : ISapGateway
     private readonly ISapServiceLayerClient _client;
     private readonly SapThrottle _throttle;
     private readonly ItemGroupsCache _itemGroupsCache;
+    private readonly SapSettings _settings;
     private readonly ILogger<SapGateway> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -32,95 +35,151 @@ internal sealed class SapGateway : ISapGateway
         ISapServiceLayerClient client,
         SapThrottle throttle,
         ItemGroupsCache itemGroupsCache,
+        IOptions<SapSettings> settings,
         ILogger<SapGateway> logger)
     {
         _sessionManager = sessionManager;
         _client = client;
         _throttle = throttle;
         _itemGroupsCache = itemGroupsCache;
+        _settings = settings.Value;
         _logger = logger;
     }
 
-    public async Task<DocumentCreatedResult> CreateStockTransferAsync(CreateStockTransferRequest request, CancellationToken ct = default)
+    public async Task<DocumentCreatedResult> CreateStockTransferBasedOnDocumentAsync(CreateStockTransferBasedOnDocumentRequest request, CancellationToken ct = default)
     {
+        EnsureTestCredentialsConfigured();
+
         var payload = JsonSerializer.Serialize(new
         {
-            DocDate = request.DocDate.ToString("yyyy-MM-dd"), // NOSONAR
+            request.DocObjectCode,
+            request.CardCode,
+            request.DocDate, // NOSONAR
+            request.TaxDate,
             request.Comments,
-            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
-            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
-            PriceList = -2,
             FromWarehouse = request.FromWarehouse, // NOSONAR
             ToWarehouse = request.ToWarehouse, // NOSONAR
-            StockTransferLines = request.Lines.Select(l => new
+            request.U_ORIGEN,
+            request.Series,
+            // PriceList -2 = "Último precio determinado" (config SAP) si el cliente no lo especifica.
+            PriceList = request.PriceList ?? -2,
+            StockTransferLines = request.StockTransferLines.Select(l => new
             {
+                l.BaseType,
+                l.BaseEntry,
+                l.BaseLine,
                 l.ItemCode,
                 l.Quantity,
-                FromWarehouseCode = request.FromWarehouse,
-                WarehouseCode = request.ToWarehouse,
-                l.ProjectCode
+                l.WarehouseCode
             })
         }, JsonOptions);
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "StockTransfers", payload, ct);
+        var json = await ExecuteWithRetryOn401Async(
+            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
+        return ParseDocumentResult(json);
+    }
+
+    public async Task<DocumentCreatedResult> CreateStockTransferDirectAsync(CreateStockTransferDirectRequest request, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            request.DocObjectCode,
+            request.CardCode,
+            request.DocDate, // NOSONAR
+            request.TaxDate,
+            request.Comments,
+            FromWarehouse = request.FromWarehouse, // NOSONAR
+            ToWarehouse = request.ToWarehouse, // NOSONAR
+            request.U_ORIGEN,
+            request.Series,
+            // PriceList -2 = "Último precio determinado" (config SAP) si el cliente no lo especifica.
+            PriceList = request.PriceList ?? -2,
+            StockTransferLines = request.StockTransferLines.Select(l => new
+            {
+                l.ItemCode,
+                l.Quantity,
+                l.WarehouseCode
+            })
+        }, JsonOptions);
+
+        var json = await ExecuteWithRetryOn401Async(
+            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
         return ParseDocumentResult(json);
     }
 
     public async Task<DocumentCreatedResult> CreateStockTransferWithBinsAsync(CreateStockTransferWithBinsRequest request, CancellationToken ct = default)
     {
+        EnsureTestCredentialsConfigured();
+
         var payload = JsonSerializer.Serialize(new
         {
-            DocDate = request.DocDate.ToString("yyyy-MM-dd"),
+            request.DocObjectCode,
+            request.CardCode,
+            request.DocDate, // NOSONAR
+            request.TaxDate,
             request.Comments,
-            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
-            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
-            PriceList = -2,
             FromWarehouse = request.FromWarehouse, // NOSONAR
             ToWarehouse = request.ToWarehouse, // NOSONAR
-            StockTransferLines = request.Lines.Select(l => new
+            request.U_ORIGEN,
+            request.Series,
+            // PriceList -2 = "Último precio determinado" (config SAP) si el cliente no lo especifica.
+            PriceList = request.PriceList ?? -2,
+            StockTransferLines = request.StockTransferLines.Select(l => new
             {
+                l.BaseType,
+                l.BaseEntry,
+                l.BaseLine,
                 l.ItemCode,
                 l.Quantity,
-                FromWarehouseCode = request.FromWarehouse,
-                WarehouseCode = request.ToWarehouse,
-                BinAllocations = new[]
+                l.WarehouseCode,
+                // Null si esa línea no trae bins (bodega sin ubicaciones en ese lado) — con
+                // DefaultIgnoreCondition.WhenWritingNull el campo se omite del payload a SAP.
+                StockTransferLinesBinAllocations = l.StockTransferLinesBinAllocations?.Select(b => new
                 {
-                    new { BinAbsEntry = l.FromBinCode, Quantity = l.Quantity, AllocationMethod = "bamByBinCode", BinActionType = "batFromWarehouse" }, // NOSONAR
-                    new { BinAbsEntry = l.ToBinCode, Quantity = l.Quantity, AllocationMethod = "bamByBinCode", BinActionType = "batToWarehouse" } // NOSONAR
-                }
+                    b.BinAbsEntry,
+                    b.Quantity,
+                    AllocationMethod = "bamByBinCode",
+                    // 1 = Entrada (bin destino) → batToWarehouse; 2 = Salida (bin origen) → batFromWarehouse.
+                    BinActionType = b.BinActionType == 1 ? "batToWarehouse" : "batFromWarehouse" // NOSONAR
+                })
             })
         }, JsonOptions);
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "StockTransfers", payload, ct);
+        var json = await ExecuteWithRetryOn401Async(
+            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
         return ParseDocumentResult(json);
+    }
+
+    private void EnsureTestCredentialsConfigured()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.TestCompanyDb))
+        {
+            throw new InvalidOperationException("Sap:TestCompanyDb no está configurado.");
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.TestPassword))
+        {
+            throw new InvalidOperationException("Sap:TestPassword no está configurado.");
+        }
     }
 
     public async Task<DocumentCreatedResult> CreateStockTransferRequestAsync(CreateStockTransferRequest request, CancellationToken ct = default)
     {
         var payload = JsonSerializer.Serialize(new
         {
-            DocDate = request.DocDate.ToString("yyyy-MM-dd"),
+            DocDate = DateTime.Now.ToString("yyyy-MM-dd"), // NOSONAR
             request.Comments,
-            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
-            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
-            PriceList = -2,
             FromWarehouse = request.FromWarehouse,
             ToWarehouse = request.ToWarehouse,
-            // U_ODC (UDF con el nº de OC de origen) y Series los incluye el payload del flujo
-            // Python que sí funciona. U_ODC es el candidato más probable del error 1299
-            // "no data found" de la TN custom (hace lookup contra la OC). Se omiten solos si
-            // el request no los trae (WhenWritingNull).
-            U_ODC = request.UOdc,
+            request.U_ORIGEN,
             Series = request.Series,
-            // ITR: la bodega va SOLO en la cabecera (FromWarehouse/ToWarehouse). A nivel de
-            // línea solo ItemCode y Quantity, replicando exactamente el payload del flujo
-            // Python que sí funcionaba. Los campos de bodega por línea (FromWarehouseCode/
-            // WarehouseCode, válidos en StockTransfers) NO se envían para un InventoryTransferRequest.
-            StockTransferLines = request.Lines.Select(l => new
+            StockTransferLines = request.StockTransferLines.Select(l => new
             {
                 l.ItemCode,
                 l.Quantity,
-                l.ProjectCode
+                l.WarehouseCode
             })
         }, JsonOptions);
 
@@ -896,12 +955,18 @@ internal sealed class SapGateway : ISapGateway
         return warehouses;
     }
 
-    private async Task<string> ExecuteWithRetryOn401Async(HttpMethod method, string resource, string? payload, CancellationToken ct)
+    private Task<string> ExecuteWithRetryOn401Async(HttpMethod method, string resource, string? payload, CancellationToken ct)
+        => ExecuteWithRetryOn401Async(method, resource, payload, companyDb: null, password: null, ct);
+
+    private async Task<string> ExecuteWithRetryOn401Async(
+        HttpMethod method, string resource, string? payload, string? companyDb, string? password, CancellationToken ct)
     {
         await _throttle.WaitAsync(ct);
         try
         {
-            var token = await _sessionManager.GetSessionTokenAsync(ct);
+            var token = companyDb is null
+                ? await _sessionManager.GetSessionTokenAsync(ct)
+                : await _sessionManager.GetSessionTokenAsync(companyDb, password!, ct);
             try
             {
                 return await _client.SendAsync(method, resource, payload, token, ct);
@@ -909,8 +974,17 @@ internal sealed class SapGateway : ISapGateway
             catch (SapException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized)
             {
                 _logger.LogWarning("SAP returned 401 for {Resource}. Invalidating session and retrying once.", resource); // NOSONAR
-                await _sessionManager.InvalidateSessionAsync(ct);
-                var newToken = await _sessionManager.GetSessionTokenAsync(ct);
+                if (companyDb is null)
+                {
+                    await _sessionManager.InvalidateSessionAsync(ct);
+                }
+                else
+                {
+                    await _sessionManager.InvalidateSessionAsync(companyDb, ct);
+                }
+                var newToken = companyDb is null
+                    ? await _sessionManager.GetSessionTokenAsync(ct)
+                    : await _sessionManager.GetSessionTokenAsync(companyDb, password!, ct);
                 return await _client.SendAsync(method, resource, payload, newToken, ct);
             }
         }

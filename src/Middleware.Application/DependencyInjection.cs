@@ -20,7 +20,8 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
-        services.AddScoped<CreateStockTransferUseCase>();
+        services.AddScoped<CreateStockTransferBasedOnDocumentUseCase>();
+        services.AddScoped<CreateStockTransferDirectUseCase>();
         services.AddScoped<CreateStockTransferWithBinsUseCase>();
         services.AddScoped<CreateStockTransferRequestUseCase>();
         services.AddScoped<CreateDepositUseCase>();
@@ -44,7 +45,8 @@ public static class DependencyInjection
         services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, GetPurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, GetPurchaseOrdersJobHandler>();
-        services.AddScoped<IJobHandler, CreateStockTransferJobHandler>();
+        services.AddScoped<IJobHandler, CreateStockTransferBasedOnDocumentJobHandler>();
+        services.AddScoped<IJobHandler, CreateStockTransferDirectJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferWithBinsJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferRequestJobHandler>();
         services.AddScoped<IJobHandler, CreateDepositJobHandler>();

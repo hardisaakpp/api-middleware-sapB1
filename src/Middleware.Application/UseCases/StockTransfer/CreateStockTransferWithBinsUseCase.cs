@@ -20,11 +20,11 @@ public sealed class CreateStockTransferWithBinsUseCase : IUseCase<CreateStockTra
     {
         _logger.LogInformation(
             "Creating StockTransfer with bins from {FromWarehouse} to {ToWarehouse} with {LineCount} lines",
-            request.FromWarehouse, request.ToWarehouse, request.Lines.Count);
+            request.FromWarehouse, request.ToWarehouse, request.StockTransferLines.Count);
 
         var result = await _gateway.CreateStockTransferWithBinsAsync(request, cancellationToken);
 
-        _logger.LogInformation("StockTransferWithBins created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
+        _logger.LogInformation("StockTransfer with bins created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
 
         return new StockTransferResponse(result.DocEntry, result.DocNum);
     }

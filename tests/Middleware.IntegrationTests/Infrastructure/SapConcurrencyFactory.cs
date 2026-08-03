@@ -68,6 +68,12 @@ file sealed class StubSessionManager : ISapSessionManager
     public Task<string> GetSessionTokenAsync(CancellationToken cancellationToken = default)
         => Task.FromResult("fake-session-token");
 
+    public Task<string> GetSessionTokenAsync(string companyDb, string password, CancellationToken cancellationToken = default)
+        => Task.FromResult("fake-session-token");
+
     public Task InvalidateSessionAsync(CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    public Task InvalidateSessionAsync(string companyDb, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
 }
