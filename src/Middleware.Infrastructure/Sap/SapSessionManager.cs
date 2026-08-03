@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -11,10 +12,7 @@ internal sealed class SapSessionManager : ISapSessionManager
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly SapSettings _settings;
     private readonly ILogger<SapSessionManager> _logger;
-    private readonly SemaphoreSlim _semaphore = new(1, 1);
-
-    private string? _sessionToken;
-    private DateTimeOffset _expiresAt = DateTimeOffset.MinValue;
+    private readonly ConcurrentDictionary<string, Session> _sessions = new();
 
     public SapSessionManager(
         IHttpClientFactory httpClientFactory,
@@ -26,54 +24,67 @@ internal sealed class SapSessionManager : ISapSessionManager
         _logger = logger;
     }
 
-    public async Task<string> GetSessionTokenAsync(CancellationToken cancellationToken = default)
+    public Task<string> GetSessionTokenAsync(CancellationToken cancellationToken = default)
+        => GetSessionTokenAsync(_settings.CompanyDb, _settings.Password, cancellationToken);
+
+    public async Task<string> GetSessionTokenAsync(string companyDb, string password, CancellationToken cancellationToken = default)
     {
-        if (_sessionToken is not null && DateTimeOffset.UtcNow < _expiresAt)
+        var session = _sessions.GetOrAdd(companyDb, _ => new Session());
+
+        if (session.Token is not null && DateTimeOffset.UtcNow < session.ExpiresAt)
         {
-            return _sessionToken;
+            return session.Token;
         }
 
-        await _semaphore.WaitAsync(cancellationToken);
+        await session.Semaphore.WaitAsync(cancellationToken);
         try
         {
-            if (_sessionToken is not null && DateTimeOffset.UtcNow < _expiresAt)
+            if (session.Token is not null && DateTimeOffset.UtcNow < session.ExpiresAt)
             {
-                return _sessionToken;
+                return session.Token;
             }
 
-            await LoginAsync(cancellationToken);
-            return _sessionToken!;
+            await LoginAsync(companyDb, password, session, cancellationToken);
+            return session.Token!;
         }
         finally
         {
-            _semaphore.Release();
+            session.Semaphore.Release();
         }
     }
 
-    public async Task InvalidateSessionAsync(CancellationToken cancellationToken = default)
+    public Task InvalidateSessionAsync(CancellationToken cancellationToken = default)
+        => InvalidateSessionAsync(_settings.CompanyDb, cancellationToken);
+
+    public async Task InvalidateSessionAsync(string companyDb, CancellationToken cancellationToken = default)
     {
-        await _semaphore.WaitAsync(cancellationToken);
+        if (!_sessions.TryGetValue(companyDb, out var session))
+        {
+            return;
+        }
+
+        await session.Semaphore.WaitAsync(cancellationToken);
         try
         {
-            _sessionToken = null;
-            _expiresAt = DateTimeOffset.MinValue;
-            _logger.LogInformation("SAP session invalidated");
+            session.Token = null;
+            session.ExpiresAt = DateTimeOffset.MinValue;
+            _logger.LogInformation("SAP session invalidated — CompanyDB={CompanyDb}", companyDb);
         }
         finally
         {
-            _semaphore.Release();
+            session.Semaphore.Release();
         }
     }
 
-    private async Task LoginAsync(CancellationToken cancellationToken)
+    private async Task LoginAsync(string companyDb, string password, Session session, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Logging in to SAP Service Layer — CompanyDB={CompanyDb}", _settings.CompanyDb);
+        _logger.LogInformation("Logging in to SAP Service Layer — CompanyDB={CompanyDb}", companyDb);
 
         var payload = JsonSerializer.Serialize(new
         {
-            CompanyDB = _settings.CompanyDb,
+            CompanyDB = companyDb,
             UserName = _settings.UserName,
-            Password = _settings.Password
+            Password = password
         });
 
         using var client = _httpClientFactory.CreateClient("SapLogin");
@@ -94,9 +105,16 @@ internal sealed class SapSessionManager : ISapSessionManager
         var sessionId = doc.RootElement.GetProperty("SessionId").GetString()
             ?? throw new InvalidOperationException("SAP login response is missing SessionId.");
 
-        _sessionToken = sessionId;
-        _expiresAt = DateTimeOffset.UtcNow.AddMinutes(25);
+        session.Token = sessionId;
+        session.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(25);
 
-        _logger.LogInformation("SAP session established, expires at {ExpiresAt:O}", _expiresAt);
+        _logger.LogInformation("SAP session established — CompanyDB={CompanyDb}, expires at {ExpiresAt:O}", companyDb, session.ExpiresAt);
+    }
+
+    private sealed class Session
+    {
+        public readonly SemaphoreSlim Semaphore = new(1, 1);
+        public string? Token;
+        public DateTimeOffset ExpiresAt = DateTimeOffset.MinValue;
     }
 }

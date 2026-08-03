@@ -9,6 +9,14 @@
 > **Cualquier cambio de nombre de campo, formato o semántica en lo listado abajo rompe
 > mba3-consultas y debe coordinarse antes de desplegar.** Los campos y ejemplos fueron
 > verificados en vivo contra SAP real (TEST_MABEL) el 2026-07-14, no solo revisados en código.
+>
+> **Nota (2026-07-31):** mba3-consultas todavía no salió a producción, sigue en pruebas —
+> por eso el endpoint #9 se pudo romper sin coordinar con esa app. Antes de modificar
+> cualquier contrato de este middleware, confirmar con el equipo dueño del módulo que lo
+> consume (o revisar el módulo) en vez de asumir que sigue siendo mba3-consultas. Otros
+> endpoints en producción de este middleware, fuera de este documento: `Liquidaciones`
+> (módulo Caja Chica), `StockTransfer` based-on-document/direct/with-bins (módulo
+> Recepción/Bodegas).
 
 ## Endpoints consumidos y campos leídos
 
@@ -93,8 +101,13 @@ Body camelCase: `{"cardCode", "docDate", "comments", "u_LOTE", "lines": [...]}`.
 
 ### 9. `POST /api/v1/stock-transfers/requests`
 
-Body: `{"fromWarehouse", "toWarehouse", "docDate", "comments", "lines": [{"itemCode",
-"quantity", "projectCode"}]}`. Éxito: `docEntry`, `docNum`.
+> ⚠️ Este endpoint NO lo consume mba3-consultas — lo consume el módulo de **reposición de
+> mercadería**. Contrato actualizado el 2026-07-31; coordinar con ese módulo antes de
+> volver a tocarlo.
+
+Body: `{"fromWarehouse", "toWarehouse", "u_ORIGEN", "comments", "series", "stockTransferLines":
+[{"itemCode", "quantity", "warehouseCode"}]}`. `docDate` ya no se recibe del cliente (el
+middleware lo completa con la fecha actual). Éxito: `docEntry`, `docNum`.
 
 ### 10. `GET /api/v1/inventory-transfer-requests?commentsContain={texto}`
 

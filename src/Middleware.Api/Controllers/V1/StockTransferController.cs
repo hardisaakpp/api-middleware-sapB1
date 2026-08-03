@@ -23,27 +23,53 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         _jobCoordinator = jobCoordinator;
     }
 
-    [HttpPost]
+    [HttpPost("based-on-document")]
     [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> Create(
-        [FromBody] CreateStockTransferRequest request,
+    public async Task<IActionResult> CreateBasedOnDocument(
+        [FromBody] CreateStockTransferBasedOnDocumentRequest request,
         CancellationToken cancellationToken)
     {
         var payloadJson = JsonSerializer.Serialize(request);
 
         var outcome = await _jobCoordinator.ExecuteAsync(
-            "CreateStockTransfer",
-            "POST /api/v1/stock-transfers",
+            "CreateStockTransferBasedOnDocument",
+            "POST /api/v1/stock-transfers/based-on-document",
             payloadJson,
-            (sp, ct) => sp.GetRequiredService<CreateStockTransferUseCase>().ExecuteAsync(request, ct),
+            (sp, ct) => sp.GetRequiredService<CreateStockTransferBasedOnDocumentUseCase>().ExecuteAsync(request, ct),
             (int)HttpStatusCode.Created,
             cancellationToken);
 
         return outcome switch
         {
-            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(Create), c.Response),
+            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(CreateBasedOnDocument), c.Response),
+            JobQueued<StockTransferResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    [HttpPost("direct")]
+    [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> CreateDirect(
+        [FromBody] CreateStockTransferDirectRequest request,
+        CancellationToken cancellationToken)
+    {
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "CreateStockTransferDirect",
+            "POST /api/v1/stock-transfers/direct",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<CreateStockTransferDirectUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.Created,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(CreateDirect), c.Response),
             JobQueued<StockTransferResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
