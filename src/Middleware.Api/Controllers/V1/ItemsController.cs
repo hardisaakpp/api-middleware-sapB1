@@ -10,6 +10,7 @@ using Middleware.Application.Dtos.Responses;
 using Middleware.Application.Jobs;
 using Middleware.Application.Jobs.Handlers;
 using Middleware.Application.UseCases.Items;
+using Middleware.Infrastructure.Sap;
 
 namespace Middleware.Api.Controllers.V1;
 
@@ -21,15 +22,21 @@ public sealed class ItemsController : ControllerBase // NOSONAR
     private readonly IJobExecutionCoordinator _jobCoordinator;
     private readonly GetItemsBatchUseCase _getItemsBatchUseCase;
     private readonly IValidator<GetItemsBatchRequest> _batchValidator;
+    private readonly IValidator<CreateItemRequest> _createValidator;
+    private readonly IValidator<UpdateItemRequest> _updateValidator;
 
     public ItemsController(
         IJobExecutionCoordinator jobCoordinator,
         GetItemsBatchUseCase getItemsBatchUseCase,
-        IValidator<GetItemsBatchRequest> batchValidator)
+        IValidator<GetItemsBatchRequest> batchValidator,
+        IValidator<CreateItemRequest> createValidator,
+        IValidator<UpdateItemRequest> updateValidator)
     {
         _jobCoordinator = jobCoordinator;
         _getItemsBatchUseCase = getItemsBatchUseCase;
         _batchValidator = batchValidator;
+        _createValidator = createValidator;
+        _updateValidator = updateValidator;
     }
 
     /// <summary>
@@ -59,6 +66,56 @@ public sealed class ItemsController : ControllerBase // NOSONAR
         return Ok(result);
     }
 
+    /// <summary>
+    /// Creates a SAP Item master record. Unlike the rest of this API's write endpoints, a SAP
+    /// business/validation error (e.g. 400 with SAP's -2035 duplicate ItemCode) is returned with
+    /// SAP's original status code rather than the generic 502 GlobalExceptionMiddleware normally
+    /// maps SapException to — callers (e.g. api-articulo-maestro's proactive-upsert flow) rely on
+    /// seeing the real SAP status to decide how to react. This passthrough only covers the fast,
+    /// synchronous attempt below; a failure surfacing later through the job queue (202 Accepted
+    /// path) is still reported via the shared JobsController/JobExceptionClassifier mapping.
+    /// </summary>
+    [HttpPost]
+    [ProducesResponseType(typeof(CreateItemResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Create([FromBody] CreateItemRequest request, CancellationToken cancellationToken)
+    {
+        var validation = await _createValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            foreach (var failure in validation.Errors)
+            {
+                ModelState.AddModelError(failure.PropertyName, failure.ErrorMessage);
+            }
+            return ValidationProblem(ModelState);
+        }
+
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        try
+        {
+            var outcome = await _jobCoordinator.ExecuteAsync(
+                "CreateItem",
+                "POST /api/v1/items",
+                payloadJson,
+                (sp, ct) => sp.GetRequiredService<CreateItemUseCase>().ExecuteAsync(request, ct),
+                (int)HttpStatusCode.Created,
+                cancellationToken);
+
+            return outcome switch
+            {
+                JobCompleted<CreateItemResponse> c => CreatedAtAction(nameof(Get), new { itemCode = c.Response.ItemCode }, c.Response),
+                JobQueued<CreateItemResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+                _ => StatusCode(StatusCodes.Status500InternalServerError)
+            };
+        }
+        catch (SapException ex)
+        {
+            return SapErrorResult(ex);
+        }
+    }
+
     [HttpGet("{itemCode}")]
     [ProducesResponseType(typeof(ItemResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
@@ -81,6 +138,94 @@ public sealed class ItemsController : ControllerBase // NOSONAR
             JobQueued<ItemResponse?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
+    }
+
+    /// <summary>Partially updates a SAP Item master record. See <see cref="Create"/> for the SAP-error passthrough behavior.</summary>
+    [HttpPatch("{itemCode}")]
+    [ProducesResponseType(typeof(UpdateItemResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Update(
+        string itemCode,
+        [FromBody] UpdateItemRequest request,
+        CancellationToken cancellationToken)
+    {
+        var fullRequest = request with { ItemCode = itemCode };
+
+        var validation = await _updateValidator.ValidateAsync(fullRequest, cancellationToken);
+        if (!validation.IsValid)
+        {
+            foreach (var failure in validation.Errors)
+            {
+                ModelState.AddModelError(failure.PropertyName, failure.ErrorMessage);
+            }
+            return ValidationProblem(ModelState);
+        }
+
+        var payloadJson = JsonSerializer.Serialize(fullRequest);
+
+        try
+        {
+            var outcome = await _jobCoordinator.ExecuteAsync(
+                "UpdateItem",
+                $"PATCH /api/v1/items/{itemCode}",
+                payloadJson,
+                (sp, ct) => sp.GetRequiredService<UpdateItemUseCase>().ExecuteAsync(fullRequest, ct),
+                (int)HttpStatusCode.OK,
+                cancellationToken);
+
+            return outcome switch
+            {
+                JobCompleted<UpdateItemResponse> c => Ok(c.Response),
+                JobQueued<UpdateItemResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+                _ => StatusCode(StatusCodes.Status500InternalServerError)
+            };
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return NotFound();
+        }
+        catch (SapException ex)
+        {
+            return SapErrorResult(ex);
+        }
+    }
+
+    /// <summary>Deletes a SAP Item master record. See <see cref="Create"/> for the SAP-error passthrough behavior.</summary>
+    [HttpDelete("{itemCode}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Delete(string itemCode, CancellationToken cancellationToken)
+    {
+        var payloadJson = JsonSerializer.Serialize(new DeleteItemJobRequest(itemCode));
+
+        try
+        {
+            var outcome = await _jobCoordinator.ExecuteAsync(
+                "DeleteItem",
+                $"DELETE /api/v1/items/{itemCode}",
+                payloadJson,
+                (sp, ct) => sp.GetRequiredService<DeleteItemUseCase>().ExecuteAsync(itemCode, ct),
+                (int)HttpStatusCode.NoContent,
+                cancellationToken);
+
+            return outcome switch
+            {
+                JobCompleted<DeleteItemResponse> => NoContent(),
+                JobQueued<DeleteItemResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+                _ => StatusCode(StatusCodes.Status500InternalServerError)
+            };
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return NotFound();
+        }
+        catch (SapException ex)
+        {
+            return SapErrorResult(ex);
+        }
     }
 
     [HttpGet("{itemCode}/stock/{warehouseCode}")]
@@ -108,5 +253,37 @@ public sealed class ItemsController : ControllerBase // NOSONAR
             JobQueued<ItemStockResponse?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
+    }
+
+    /// <summary>
+    /// Combined existence check across PurchaseOrders/InventoryGenEntries/InventoryTransferRequests —
+    /// used by callers to decide if an item is still editable. Synchronous by design (no job queue):
+    /// this is a fast yes/no the caller needs immediately, unlike this API's write endpoints where
+    /// queueing a slow SAP write behind a 202 makes sense. A SAP outage surfaces as-is through
+    /// GlobalExceptionMiddleware (503/504), consistent with the other synchronous read endpoints
+    /// (Warehouses, Validations).
+    /// </summary>
+    [HttpGet("{itemCode}/has-movements")]
+    [ProducesResponseType(typeof(HasItemMovementsResponse), StatusCodes.Status200OK)]
+    public async Task<ActionResult<HasItemMovementsResponse>> GetHasMovements(
+        string itemCode,
+        [FromServices] HasItemMovementsUseCase hasMovementsUseCase,
+        CancellationToken cancellationToken)
+    {
+        var result = await hasMovementsUseCase.ExecuteAsync(itemCode, cancellationToken);
+        return Ok(result);
+    }
+
+    // Preserves SAP's original status/body instead of the generic 502 GlobalExceptionMiddleware
+    // maps SapException to — see the passthrough note on Create.
+    private IActionResult SapErrorResult(SapException ex)
+    {
+        var problem = new ProblemDetails
+        {
+            Status = (int)ex.StatusCode,
+            Title = "SAP service error",
+            Detail = ex.SapError
+        };
+        return StatusCode((int)ex.StatusCode, problem);
     }
 }

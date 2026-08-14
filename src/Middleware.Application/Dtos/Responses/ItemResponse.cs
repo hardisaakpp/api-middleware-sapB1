@@ -1,3 +1,5 @@
+using Middleware.Application.Abstractions;
+
 namespace Middleware.Application.Dtos.Responses;
 
 public sealed record ItemResponse(
@@ -14,7 +16,12 @@ public sealed record ItemResponse(
     string? PackCode,
     int? GroupCode,
     string? GroupName,
-    string? PreferredVendorCode
+    string? PreferredVendorCode,
+    // Only populated by GetItemsByCodesAsync (POST /items/batch), which requests
+    // ItemWarehouseInfoCollection in its $select; GetItemAsync (GET /items/{itemCode})
+    // does not request it, so this stays null there. Additive field — does not change
+    // the shape other callers of ItemResponse already rely on.
+    IReadOnlyList<SapItemWarehouseData>? Warehouses = null
 );
 
 public sealed record ItemStockResponse(

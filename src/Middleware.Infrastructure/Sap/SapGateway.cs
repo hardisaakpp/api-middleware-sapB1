@@ -547,6 +547,203 @@ internal sealed class SapGateway : ISapGateway
         }
     }
 
+    public async Task CreateItemAsync(CreateItemRequest request, CancellationToken ct = default)
+    {
+        var payload = JsonSerializer.Serialize(BuildItemPayload(request, request.ItemCode, request.ItemName), JsonOptions);
+        await ExecuteWithRetryOn401Async(HttpMethod.Post, "Items", payload, ct);
+    }
+
+    public async Task UpdateItemAsync(string itemCode, UpdateItemRequest request, CancellationToken ct = default)
+    {
+        var payload = JsonSerializer.Serialize(BuildItemPayload(request, itemCode: null, request.ItemName), JsonOptions);
+        var encoded = Uri.EscapeDataString(itemCode);
+
+        try
+        {
+            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"Items('{encoded}')", payload, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP Item '{ItemCode}' not found (SAP 404)", itemCode); // NOSONAR
+            throw;
+        }
+    }
+
+    public async Task DeleteItemAsync(string itemCode, CancellationToken ct = default)
+    {
+        var encoded = Uri.EscapeDataString(itemCode);
+        try
+        {
+            await ExecuteWithRetryOn401Async(HttpMethod.Delete, $"Items('{encoded}')", null, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP Item '{ItemCode}' not found (SAP 404)", itemCode); // NOSONAR
+            throw;
+        }
+    }
+
+    // Shared by Create/UpdateItemAsync: both DTOs carry the same optional SAP-facing fields,
+    // only ItemCode (omitted from the PATCH body — it is already in the URL) and ItemName's
+    // required-ness differ between the two callers.
+    private static Dictionary<string, object?> BuildItemPayload(object request, string? itemCode, string? itemName)
+    {
+        var (fields, itemPrices) = request switch
+        {
+            CreateItemRequest c => (ExtractItemFields(c), c.ItemPrices),
+            UpdateItemRequest u => (ExtractItemFields(u), u.ItemPrices),
+            _ => throw new ArgumentOutOfRangeException(nameof(request))
+        };
+
+        var payload = new Dictionary<string, object?>(fields);
+        if (itemCode is not null)
+        {
+            payload["ItemCode"] = itemCode;
+        }
+        if (itemName is not null)
+        {
+            payload["ItemName"] = itemName;
+        }
+        if (itemPrices is { Count: > 0 })
+        {
+            payload["ItemPrices"] = itemPrices.Select(p => new { p.PriceList, p.Price, p.Currency });
+        }
+
+        // Dictionary<TKey,TValue> serialization does not honour DefaultIgnoreCondition.WhenWritingNull —
+        // strip unset fields explicitly so a PATCH only carries the properties the caller actually set.
+        return payload.Where(kv => kv.Value is not null).ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
+    private static Dictionary<string, object?> ExtractItemFields(CreateItemRequest r) => new()
+    {
+        ["ForeignName"] = r.ForeignName,
+        ["BarCode"] = r.BarCode,
+        ["InventoryUOM"] = r.InventoryUOM,
+        ["PurchaseUnit"] = r.PurchaseUnit,
+        ["PurchaseItemsPerUnit"] = r.PurchaseItemsPerUnit,
+        ["SalesUnit"] = r.SalesUnit,
+        ["SalesItemsPerUnit"] = r.SalesItemsPerUnit,
+        ["ItemsGroupCode"] = r.ItemsGroupCode,
+        ["ItemType"] = r.ItemType,
+        ["CostAccountingMethod"] = r.CostAccountingMethod,
+        ["GLMethod"] = r.GLMethod,
+        ["ManageStockByWarehouse"] = r.ManageStockByWarehouse,
+        ["PurchaseItem"] = r.PurchaseItem,
+        ["SalesItem"] = r.SalesItem,
+        ["InventoryItem"] = r.InventoryItem,
+        ["VatLiable"] = r.VatLiable,
+        ["WTLiable"] = r.WTLiable,
+        ["IndirectTax"] = r.IndirectTax,
+        ["ArTaxCode"] = r.ArTaxCode,
+        ["ApTaxCode"] = r.ApTaxCode,
+        ["Manufacturer"] = r.Manufacturer,
+        ["ShipType"] = r.ShipType,
+        ["ManageBatchNumbers"] = r.ManageBatchNumbers,
+        ["PlanningSystem"] = r.PlanningSystem,
+        ["ProcurementMethod"] = r.ProcurementMethod,
+        ["Frozen"] = r.Frozen,
+        ["Properties63"] = r.Properties63,
+        ["LeadTime"] = r.LeadTime,
+        ["MinOrderQuantity"] = r.MinOrderQuantity,
+        ["U_ItemCode2"] = r.U_ItemCode2,
+        ["U_SXX_SKU_SIN_TALLA"] = r.U_SXX_SKU_SIN_TALLA,
+        ["U_IXX_TALLA"] = r.U_IXX_TALLA,
+        ["U_IXX_MARCA"] = r.U_IXX_MARCA,
+        ["U_DESC_ECOMM"] = r.U_DESC_ECOMM,
+        ["U_GEN"] = r.U_GEN,
+        ["U_COD_COLOR"] = r.U_COD_COLOR,
+        ["U_IXX_COLORES"] = r.U_IXX_COLORES,
+        ["U_COD_COL_SECU"] = r.U_COD_COL_SECU,
+        ["U_COLOR_SECU"] = r.U_COLOR_SECU,
+        ["U_IXX_MATERIAL"] = r.U_IXX_MATERIAL,
+        ["U_IXX_COMPOSICION"] = r.U_IXX_COMPOSICION,
+        ["U_NV3"] = r.U_NV3,
+        ["U_NV2"] = r.U_NV2,
+        ["U_NV1"] = r.U_NV1,
+        ["U_MARCA"] = r.U_MARCA,
+        ["U_NOM_COLECCION"] = r.U_NOM_COLECCION,
+        ["U_ATR_MED"] = r.U_ATR_MED,
+        ["U_ATR_UNI"] = r.U_ATR_UNI,
+        ["U_IXX_PACK"] = r.U_IXX_PACK,
+        ["U_COD_PVR"] = r.U_COD_PVR,
+        ["U_REPOSICION"] = r.U_REPOSICION,
+        ["U_ORIGEN"] = r.U_ORIGEN,
+        ["U_P_ORI"] = r.U_P_ORI,
+        ["U_TIP_ABS"] = r.U_TIP_ABS,
+        ["U_UNIDAD_DESPACHO"] = r.U_UNIDAD_DESPACHO,
+        ["U_DESP_IN"] = r.U_DESP_IN,
+        ["U_CANAL_VENTA"] = r.U_CANAL_VENTA,
+        ["U_REGION"] = r.U_REGION,
+        ["U_PR_ARQ"] = r.U_PR_ARQ,
+        ["U_LIQ"] = r.U_LIQ,
+        ["U_TIPO_BIEN"] = r.U_TIPO_BIEN
+    };
+
+    private static Dictionary<string, object?> ExtractItemFields(UpdateItemRequest r) => new()
+    {
+        ["ForeignName"] = r.ForeignName,
+        ["BarCode"] = r.BarCode,
+        ["InventoryUOM"] = r.InventoryUOM,
+        ["PurchaseUnit"] = r.PurchaseUnit,
+        ["PurchaseItemsPerUnit"] = r.PurchaseItemsPerUnit,
+        ["SalesUnit"] = r.SalesUnit,
+        ["SalesItemsPerUnit"] = r.SalesItemsPerUnit,
+        ["ItemsGroupCode"] = r.ItemsGroupCode,
+        ["ItemType"] = r.ItemType,
+        ["CostAccountingMethod"] = r.CostAccountingMethod,
+        ["GLMethod"] = r.GLMethod,
+        ["ManageStockByWarehouse"] = r.ManageStockByWarehouse,
+        ["PurchaseItem"] = r.PurchaseItem,
+        ["SalesItem"] = r.SalesItem,
+        ["InventoryItem"] = r.InventoryItem,
+        ["VatLiable"] = r.VatLiable,
+        ["WTLiable"] = r.WTLiable,
+        ["IndirectTax"] = r.IndirectTax,
+        ["ArTaxCode"] = r.ArTaxCode,
+        ["ApTaxCode"] = r.ApTaxCode,
+        ["Manufacturer"] = r.Manufacturer,
+        ["ShipType"] = r.ShipType,
+        ["ManageBatchNumbers"] = r.ManageBatchNumbers,
+        ["PlanningSystem"] = r.PlanningSystem,
+        ["ProcurementMethod"] = r.ProcurementMethod,
+        ["Frozen"] = r.Frozen,
+        ["Properties63"] = r.Properties63,
+        ["LeadTime"] = r.LeadTime,
+        ["MinOrderQuantity"] = r.MinOrderQuantity,
+        ["U_ItemCode2"] = r.U_ItemCode2,
+        ["U_SXX_SKU_SIN_TALLA"] = r.U_SXX_SKU_SIN_TALLA,
+        ["U_IXX_TALLA"] = r.U_IXX_TALLA,
+        ["U_IXX_MARCA"] = r.U_IXX_MARCA,
+        ["U_DESC_ECOMM"] = r.U_DESC_ECOMM,
+        ["U_GEN"] = r.U_GEN,
+        ["U_COD_COLOR"] = r.U_COD_COLOR,
+        ["U_IXX_COLORES"] = r.U_IXX_COLORES,
+        ["U_COD_COL_SECU"] = r.U_COD_COL_SECU,
+        ["U_COLOR_SECU"] = r.U_COLOR_SECU,
+        ["U_IXX_MATERIAL"] = r.U_IXX_MATERIAL,
+        ["U_IXX_COMPOSICION"] = r.U_IXX_COMPOSICION,
+        ["U_NV3"] = r.U_NV3,
+        ["U_NV2"] = r.U_NV2,
+        ["U_NV1"] = r.U_NV1,
+        ["U_MARCA"] = r.U_MARCA,
+        ["U_NOM_COLECCION"] = r.U_NOM_COLECCION,
+        ["U_ATR_MED"] = r.U_ATR_MED,
+        ["U_ATR_UNI"] = r.U_ATR_UNI,
+        ["U_IXX_PACK"] = r.U_IXX_PACK,
+        ["U_COD_PVR"] = r.U_COD_PVR,
+        ["U_REPOSICION"] = r.U_REPOSICION,
+        ["U_ORIGEN"] = r.U_ORIGEN,
+        ["U_P_ORI"] = r.U_P_ORI,
+        ["U_TIP_ABS"] = r.U_TIP_ABS,
+        ["U_UNIDAD_DESPACHO"] = r.U_UNIDAD_DESPACHO,
+        ["U_DESP_IN"] = r.U_DESP_IN,
+        ["U_CANAL_VENTA"] = r.U_CANAL_VENTA,
+        ["U_REGION"] = r.U_REGION,
+        ["U_PR_ARQ"] = r.U_PR_ARQ,
+        ["U_LIQ"] = r.U_LIQ,
+        ["U_TIPO_BIEN"] = r.U_TIPO_BIEN
+    };
+
     // InventoryUoMEntry is the numeric UoM entry id (e.g. -1); the human-readable UoM code
     // used across this API's "uomCode"/InventoryUoM fields is the string field InventoryUOM
     // (e.g. "UNIDAD") — confirmed against real Service Layer data.
@@ -594,17 +791,20 @@ internal sealed class SapGateway : ISapGateway
         }
 
         var filter = string.Join(" or ", itemCodes.Select(c => $"ItemCode eq '{c.Replace("'", "''")}'"));
+        // Unlike GetItemAsync, the batch also requests ItemWarehouseInfoCollection in the same call —
+        // this is the one SAP round trip api-articulo-maestro's check_item_movements_in_sap needs
+        // (item master data + per-warehouse stock together), instead of a second call per item.
         string json;
         try
         {
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items?$filter={filter}&$select={ItemSelectFields},U_IXX_PACK", null, ct);
+                $"Items?$filter={filter}&$select={ItemSelectFields},U_IXX_PACK,ItemWarehouseInfoCollection", null, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
         {
             _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK for items batch. Retrying without the UDF.");
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items?$filter={filter}&$select={ItemSelectFields}", null, ct);
+                $"Items?$filter={filter}&$select={ItemSelectFields},ItemWarehouseInfoCollection", null, ct);
         }
 
         var groups = await GetItemGroupsMapAsync(ct);
@@ -641,6 +841,12 @@ internal sealed class SapGateway : ISapGateway
                 ? gcVal
                 : null;
 
+        // Present only when the caller's $select included ItemWarehouseInfoCollection
+        // (GetItemsByCodesAsync); absent for GetItemAsync, which leaves Warehouses null.
+        var warehouses = root.TryGetProperty("ItemWarehouseInfoCollection", out _)
+            ? ParseItemWarehouses(root)
+            : null;
+
         return new ItemResponse(
             StrOpt(ItemCodeProperty) ?? fallbackItemCode,
             StrOpt("ItemName") ?? string.Empty,
@@ -655,7 +861,8 @@ internal sealed class SapGateway : ISapGateway
             StrOptNormalized("U_IXX_PACK"),
             groupCode,
             groupCode is int g && groups.TryGetValue(g, out var groupName) ? groupName : null,
-            StrOptNormalized("Mainsupplier")
+            StrOptNormalized("Mainsupplier"),
+            warehouses
         );
     }
 
@@ -948,7 +1155,8 @@ internal sealed class SapGateway : ISapGateway
                 wc.GetString()!,
                 GetDecimalOrZero(entry, "InStock"),
                 GetDecimalOrZero(entry, "Committed"),
-                IsTyes(entry, "Locked")
+                IsTyes(entry, "Locked"),
+                GetDecimalOrZero(entry, "Ordered")
             ));
         }
 
@@ -1037,6 +1245,61 @@ internal sealed class SapGateway : ISapGateway
         return doc.RootElement.TryGetProperty(ValueProperty, out var arr)
             ? ParseWarehouses(arr)
             : [];
+    }
+
+    public async Task<IReadOnlyList<PriceListResponse>> GetPriceListsAsync(CancellationToken ct = default)
+    {
+        var priceLists = new List<PriceListResponse>();
+        string? resource = "PriceLists?$select=PriceListNo,PriceListName";
+
+        // SL pages results (default 20 per page); follow odata.nextLink until exhausted
+        const int maxPages = 100;
+        for (var page = 0; resource is not null && page < maxPages; page++)
+        {
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty(ValueProperty, out var arr))
+            {
+                foreach (var entry in arr.EnumerateArray())
+                {
+                    if (entry.TryGetProperty("PriceListNo", out var no) && no.TryGetInt32(out var noVal) &&
+                        entry.TryGetProperty("PriceListName", out var name) && name.ValueKind == JsonValueKind.String)
+                    {
+                        priceLists.Add(new PriceListResponse(noVal, name.GetString()!));
+                    }
+                }
+            }
+
+            resource = GetNextLink(root);
+        }
+
+        return priceLists;
+    }
+
+    public Task<bool> HasPurchaseOrderLineForItemAsync(string itemCode, CancellationToken ct = default) =>
+        HasDocumentLineForItemAsync("PurchaseOrders", "DocumentLines", itemCode, ct);
+
+    public Task<bool> HasInventoryGenEntryLineForItemAsync(string itemCode, CancellationToken ct = default) =>
+        HasDocumentLineForItemAsync("InventoryGenEntries", "DocumentLines", itemCode, ct);
+
+    public Task<bool> HasInventoryTransferRequestLineForItemAsync(string itemCode, CancellationToken ct = default) =>
+        // Unlike PurchaseOrders/InventoryGenEntries, InventoryTransferRequests' line collection is
+        // called StockTransferLines (see GetInventoryTransferRequestsByCommentAsync's $select above).
+        HasDocumentLineForItemAsync("InventoryTransferRequests", "StockTransferLines", itemCode, ct);
+
+    private async Task<bool> HasDocumentLineForItemAsync(
+        string entity, string linesProperty, string itemCode, CancellationToken ct)
+    {
+        var escaped = itemCode.Replace("'", "''");
+        var resource = $"{entity}?$filter={linesProperty}/ItemCode eq '{escaped}'&$select=DocEntry&$top=1";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.TryGetProperty(ValueProperty, out var arr) && arr.GetArrayLength() > 0;
     }
 
     private static List<WarehouseResponse> ParseWarehouses(JsonElement arr)
