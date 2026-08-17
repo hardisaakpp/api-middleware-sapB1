@@ -99,8 +99,6 @@ internal static class StartupConfiguration
             app.UseSwaggerUI(opt => opt.SwaggerEndpoint("/swagger/v1/swagger.json", "SAP Middleware API v1"));
         }
 
-        app.UseMiddleware<ApiKeyMiddleware>();
-
         if (!app.Environment.IsDevelopment())
         {
             app.UseHttpsRedirection();
