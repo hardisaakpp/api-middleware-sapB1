@@ -9,6 +9,7 @@ using Middleware.Application.UseCases.GoodsReceipt;
 using Middleware.Application.UseCases.InventoryTransferRequests;
 using Middleware.Application.UseCases.Items;
 using Middleware.Application.UseCases.Liquidaciones;
+using Middleware.Application.UseCases.PriceLists;
 using Middleware.Application.UseCases.PurchaseOrders;
 using Middleware.Application.UseCases.StockTransfer;
 using Middleware.Application.UseCases.Validations;
@@ -34,12 +35,17 @@ public static class DependencyInjection
         services.AddScoped<GetItemUseCase>();
         services.AddScoped<GetItemStockUseCase>();
         services.AddScoped<GetItemsBatchUseCase>();
+        services.AddScoped<CreateItemUseCase>();
+        services.AddScoped<UpdateItemUseCase>();
+        services.AddScoped<DeleteItemUseCase>();
+        services.AddScoped<HasItemMovementsUseCase>();
         services.AddScoped<GetBusinessPartnerUseCase>();
         services.AddScoped<GetInventoryTransferRequestsByCommentUseCase>();
         services.AddScoped<UpdateInventoryTransferRequestStatusUseCase>();
         services.AddScoped<ValidatePurchaseOrderUseCase>();
         services.AddScoped<GetWarehousesUseCase>();
         services.AddScoped<ValidateWarehousesUseCase>();
+        services.AddScoped<GetPriceListsUseCase>();
 
         services.AddScoped<IJobHandler, CreatePurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();
@@ -55,6 +61,9 @@ public static class DependencyInjection
         services.AddScoped<IJobHandler, GetBusinessPartnerJobHandler>();
         services.AddScoped<IJobHandler, GetItemJobHandler>();
         services.AddScoped<IJobHandler, GetItemStockJobHandler>();
+        services.AddScoped<IJobHandler, CreateItemJobHandler>();
+        services.AddScoped<IJobHandler, UpdateItemJobHandler>();
+        services.AddScoped<IJobHandler, DeleteItemJobHandler>();
         services.AddScoped<IJobHandler, GetInventoryTransferRequestsByCommentJobHandler>();
         services.AddScoped<IJobHandler, UpdateInventoryTransferRequestStatusJobHandler>();
 

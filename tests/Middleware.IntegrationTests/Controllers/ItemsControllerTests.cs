@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -231,6 +232,48 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
         // Item-level UoM still resolves even when the requested warehouse has no entry
         body.RootElement.GetProperty("uomCode").GetString().Should().Be("UN");
         body.RootElement.GetProperty("locked").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Batch_ItemWithWarehouseInfo_ReturnsWarehousesBreakdown()
+    {
+        const string batchJson = """
+            {
+                "value": [
+                    {
+                        "ItemCode": "R215.810.NO",
+                        "ItemName": "CASUAL LISA X1",
+                        "QuantityOnStock": 179.0,
+                        "PurchaseItem": "tYES",
+                        "SalesItem": "tYES",
+                        "InventoryItem": "tYES",
+                        "Valid": "tYES",
+                        "Frozen": "tNO",
+                        "ItemType": "itItems",
+                        "ItemsGroupCode": 105,
+                        "ItemWarehouseInfoCollection": [
+                            { "WarehouseCode": "RL-CD", "InStock": 100.0, "Committed": 10.0, "Locked": "tNO" },
+                            { "WarehouseCode": "TIENDA01", "InStock": 79.0, "Committed": 0.0, "Locked": "tYES" }
+                        ]
+                    }
+                ]
+            }
+            """;
+        var fake = new ScriptedSapClient(url =>
+            url.StartsWith("ItemGroups", StringComparison.Ordinal) ? ItemGroupsJson : batchJson);
+        var client = CreateClient(fake);
+
+        var response = await client.PostAsJsonAsync("/api/v1/items/batch", new { itemCodes = new[] { "R215.810.NO" } });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var item = body.RootElement.GetProperty("items")[0];
+        var warehouses = item.GetProperty("warehouses");
+        warehouses.GetArrayLength().Should().Be(2);
+        warehouses[0].GetProperty("warehouseCode").GetString().Should().Be("RL-CD");
+        warehouses[0].GetProperty("inStock").GetDecimal().Should().Be(100.0m);
+        warehouses[0].GetProperty("committed").GetDecimal().Should().Be(10.0m);
+        warehouses[1].GetProperty("locked").GetBoolean().Should().BeTrue();
     }
 
     [Fact]

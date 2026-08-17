@@ -1,4 +1,5 @@
 using Middleware.Api;
+using Middleware.Api.Configuration;
 using Middleware.Api.HealthChecks;
 using Middleware.Api.Logging;
 using Middleware.Api.Middleware;
@@ -49,6 +50,10 @@ try
     // Batch validation settings (timeout, SL chunk size, parallelism)
     builder.Services.Configure<ValidationSettings>(
         builder.Configuration.GetSection(ValidationSettings.SectionName));
+
+    // Shared-secret auth for service-to-service consumers (see ApiKeyMiddleware)
+    builder.Services.Configure<ApiKeySettings>(
+        builder.Configuration.GetSection(ApiKeySettings.SectionName));
 
     var app = builder.Build();
 
