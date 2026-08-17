@@ -276,7 +276,7 @@ public sealed class ItemsController : ControllerBase // NOSONAR
 
     // Preserves SAP's original status/body instead of the generic 502 GlobalExceptionMiddleware
     // maps SapException to — see the passthrough note on Create.
-    private IActionResult SapErrorResult(SapException ex)
+    private ObjectResult SapErrorResult(SapException ex)
     {
         var problem = new ProblemDetails
         {

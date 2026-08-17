@@ -35,7 +35,7 @@ public sealed class ApiKeyMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        if (ExemptPathPrefixes.Any(prefix => context.Request.Path.StartsWithSegments(prefix)))
+        if (Array.Exists(ExemptPathPrefixes, prefix => context.Request.Path.StartsWithSegments(prefix)))
         {
             await _next(context);
             return;

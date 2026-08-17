@@ -29,6 +29,10 @@ internal sealed class SapGateway : ISapGateway
     private const string ValueProperty = "value";
     private const string ItemCodeProperty = "ItemCode";
     private const string WarehouseCodeProperty = "WarehouseCode";
+    private const string DocumentLinesProperty = "DocumentLines";
+    private const string InventoryUomProperty = "InventoryUOM";
+    private const string PurchaseItemProperty = "PurchaseItem";
+    private const string FrozenProperty = "Frozen";
 
     public SapGateway(
         ISapSessionManager sessionManager,
@@ -350,7 +354,7 @@ internal sealed class SapGateway : ISapGateway
             payload["U_STATUS"] = request.U_STATUS.Value;
         }
 
-        payload["DocumentLines"] = (request.DocumentLines ?? []).Select(line =>
+        payload[DocumentLinesProperty] = (request.DocumentLines ?? []).Select(line =>
         {
             var node = new Dictionary<string, object?>
             {
@@ -487,7 +491,7 @@ internal sealed class SapGateway : ISapGateway
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
 
-        var lines = root.TryGetProperty("DocumentLines", out var linesEl)
+        var lines = root.TryGetProperty(DocumentLinesProperty, out var linesEl)
             ? linesEl.EnumerateArray()
                 .Select((l, i) => new PurchaseOrderLineResponse(
                     RequiredInt(l, "LineNum", $"DocumentLines[{i}]"),
@@ -618,7 +622,7 @@ internal sealed class SapGateway : ISapGateway
     {
         ["ForeignName"] = r.ForeignName,
         ["BarCode"] = r.BarCode,
-        ["InventoryUOM"] = r.InventoryUOM,
+        [InventoryUomProperty] = r.InventoryUOM,
         ["PurchaseUnit"] = r.PurchaseUnit,
         ["PurchaseItemsPerUnit"] = r.PurchaseItemsPerUnit,
         ["SalesUnit"] = r.SalesUnit,
@@ -628,7 +632,7 @@ internal sealed class SapGateway : ISapGateway
         ["CostAccountingMethod"] = r.CostAccountingMethod,
         ["GLMethod"] = r.GLMethod,
         ["ManageStockByWarehouse"] = r.ManageStockByWarehouse,
-        ["PurchaseItem"] = r.PurchaseItem,
+        [PurchaseItemProperty] = r.PurchaseItem,
         ["SalesItem"] = r.SalesItem,
         ["InventoryItem"] = r.InventoryItem,
         ["VatLiable"] = r.VatLiable,
@@ -641,7 +645,7 @@ internal sealed class SapGateway : ISapGateway
         ["ManageBatchNumbers"] = r.ManageBatchNumbers,
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
-        ["Frozen"] = r.Frozen,
+        [FrozenProperty] = r.Frozen,
         ["Properties63"] = r.Properties63,
         ["LeadTime"] = r.LeadTime,
         ["MinOrderQuantity"] = r.MinOrderQuantity,
@@ -683,7 +687,7 @@ internal sealed class SapGateway : ISapGateway
     {
         ["ForeignName"] = r.ForeignName,
         ["BarCode"] = r.BarCode,
-        ["InventoryUOM"] = r.InventoryUOM,
+        [InventoryUomProperty] = r.InventoryUOM,
         ["PurchaseUnit"] = r.PurchaseUnit,
         ["PurchaseItemsPerUnit"] = r.PurchaseItemsPerUnit,
         ["SalesUnit"] = r.SalesUnit,
@@ -693,7 +697,7 @@ internal sealed class SapGateway : ISapGateway
         ["CostAccountingMethod"] = r.CostAccountingMethod,
         ["GLMethod"] = r.GLMethod,
         ["ManageStockByWarehouse"] = r.ManageStockByWarehouse,
-        ["PurchaseItem"] = r.PurchaseItem,
+        [PurchaseItemProperty] = r.PurchaseItem,
         ["SalesItem"] = r.SalesItem,
         ["InventoryItem"] = r.InventoryItem,
         ["VatLiable"] = r.VatLiable,
@@ -706,7 +710,7 @@ internal sealed class SapGateway : ISapGateway
         ["ManageBatchNumbers"] = r.ManageBatchNumbers,
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
-        ["Frozen"] = r.Frozen,
+        [FrozenProperty] = r.Frozen,
         ["Properties63"] = r.Properties63,
         ["LeadTime"] = r.LeadTime,
         ["MinOrderQuantity"] = r.MinOrderQuantity,
@@ -850,13 +854,13 @@ internal sealed class SapGateway : ISapGateway
         return new ItemResponse(
             StrOpt(ItemCodeProperty) ?? fallbackItemCode,
             StrOpt("ItemName") ?? string.Empty,
-            StrOpt("InventoryUOM"),
+            StrOpt(InventoryUomProperty),
             GetDecimalOrZero(root, "QuantityOnStock"),
-            IsTyes(root, "PurchaseItem"),
+            IsTyes(root, PurchaseItemProperty),
             IsTyes(root, "SalesItem"),
             IsTyes(root, "InventoryItem"),
             IsTyes(root, "Valid"),
-            IsTyes(root, "Frozen"),
+            IsTyes(root, FrozenProperty),
             StrOpt("ItemType"),
             StrOptNormalized("U_IXX_PACK"),
             groupCode,
@@ -959,7 +963,7 @@ internal sealed class SapGateway : ISapGateway
         }
 
         // Item-level UoM (same field GetItemsForValidationAsync exposes as SapItemValidationData.InventoryUoM)
-        var uomCode = root.TryGetProperty("InventoryUOM", out var uom) && uom.ValueKind == JsonValueKind.String
+        var uomCode = root.TryGetProperty(InventoryUomProperty, out var uom) && uom.ValueKind == JsonValueKind.String
             ? uom.GetString()
             : null;
 
@@ -1015,7 +1019,7 @@ internal sealed class SapGateway : ISapGateway
             StrOpt("Phone1"),
             StrOpt("EmailAddress"),
             Valid:  IsTyes(root, "Valid"),
-            Frozen: IsTyes(root, "Frozen")
+            Frozen: IsTyes(root, FrozenProperty)
         );
     }
 
@@ -1126,10 +1130,10 @@ internal sealed class SapGateway : ISapGateway
         return new SapItemValidationData(
             ic.GetString()!,
             item.TryGetProperty("ItemName", out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
-            IsTyes(item, "PurchaseItem"),
+            IsTyes(item, PurchaseItemProperty),
             IsTyes(item, "Valid"),
-            IsTyes(item, "Frozen"),
-            item.TryGetProperty("InventoryUOM", out var uom) && uom.ValueKind == JsonValueKind.String ? uom.GetString() : null,
+            IsTyes(item, FrozenProperty),
+            item.TryGetProperty(InventoryUomProperty, out var uom) && uom.ValueKind == JsonValueKind.String ? uom.GetString() : null,
             ParseItemWarehouses(item)
         );
     }
@@ -1280,10 +1284,10 @@ internal sealed class SapGateway : ISapGateway
     }
 
     public Task<bool> HasPurchaseOrderLineForItemAsync(string itemCode, CancellationToken ct = default) =>
-        HasDocumentLineForItemAsync("PurchaseOrders", "DocumentLines", itemCode, ct);
+        HasDocumentLineForItemAsync("PurchaseOrders", DocumentLinesProperty, itemCode, ct);
 
     public Task<bool> HasInventoryGenEntryLineForItemAsync(string itemCode, CancellationToken ct = default) =>
-        HasDocumentLineForItemAsync("InventoryGenEntries", "DocumentLines", itemCode, ct);
+        HasDocumentLineForItemAsync("InventoryGenEntries", DocumentLinesProperty, itemCode, ct);
 
     public Task<bool> HasInventoryTransferRequestLineForItemAsync(string itemCode, CancellationToken ct = default) =>
         // Unlike PurchaseOrders/InventoryGenEntries, InventoryTransferRequests' line collection is
