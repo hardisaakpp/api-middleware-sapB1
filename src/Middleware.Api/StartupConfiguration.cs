@@ -68,7 +68,7 @@ internal static class StartupConfiguration
     // Swagger (dev and test only — avoids assembly scanning overhead in production)
     public static void ConfigureSwagger(WebApplicationBuilder builder)
     {
-        if (!IsSwaggerEnabled(builder.Environment))
+        if (!IsSwaggerEnabled(builder.Environment, builder.Configuration))
         {
             return;
         }
@@ -93,7 +93,7 @@ internal static class StartupConfiguration
         });
         app.UseMiddleware<GlobalExceptionMiddleware>();
 
-        if (IsSwaggerEnabled(app.Environment))
+        if (IsSwaggerEnabled(app.Environment, app.Configuration))
         {
             app.UseSwagger();
             app.UseSwaggerUI(opt => opt.SwaggerEndpoint("/swagger/v1/swagger.json", "SAP Middleware API v1"));
@@ -113,8 +113,8 @@ internal static class StartupConfiguration
         });
     }
 
-    private static bool IsSwaggerEnabled(IHostEnvironment environment) =>
-        environment.IsDevelopment() || environment.IsEnvironment("Test");
+    private static bool IsSwaggerEnabled(IHostEnvironment environment, IConfiguration configuration) =>
+        environment.IsDevelopment() || configuration.GetValue<bool>("EnableSwagger", false);
 
     private static LogEventLevel GetLogEventLevel(HttpContext ctx, Exception? ex)
     {
