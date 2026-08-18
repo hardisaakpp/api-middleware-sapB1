@@ -37,4 +37,34 @@ internal sealed class SqlRepository : ISqlRepository
 
         return result is null or DBNull ? 0m : Convert.ToDecimal(result);
     }
+
+    public async Task<IReadOnlyDictionary<string, decimal>> GetAvailableStockBatchAsync(
+    IReadOnlyList<string> itemCodes, string warehouseCode, CancellationToken ct = default)
+    {
+        var results = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        var sync = new object();
+
+        using var gate = new SemaphoreSlim(10);
+        var tasks = itemCodes.Select(async itemCode =>
+        {
+            await gate.WaitAsync(ct);
+            try
+            {
+                var stock = await GetAvailableStockAsync(itemCode, warehouseCode, ct);
+                lock (sync)
+                {
+                    results[itemCode] = stock;
+                }
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks);
+        return results;
+    }
+
+
 }

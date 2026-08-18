@@ -25,3 +25,18 @@ public sealed record ItemStockResponse(
     string? UomCode,
     bool Locked
 );
+
+public sealed record ItemsStockBatchResponse(
+    IReadOnlyList<ItemStockResponse> Items,
+    IReadOnlyList<string> NotFound
+);
+public sealed record ItemAvailableStockResponse(
+    string ItemCode,
+    string WarehouseCode,
+    decimal Available
+);
+
+public sealed record ItemsAvailableStockBatchResponse(
+    IReadOnlyList<ItemAvailableStockResponse> Items
+);
+

@@ -21,15 +21,24 @@ public sealed class ItemsController : ControllerBase // NOSONAR
     private readonly IJobExecutionCoordinator _jobCoordinator;
     private readonly GetItemsBatchUseCase _getItemsBatchUseCase;
     private readonly IValidator<GetItemsBatchRequest> _batchValidator;
+    private readonly GetItemsStockBatchUseCase _getItemsStockBatchUseCase;
+    private readonly IValidator<GetItemsStockBatchRequest> _stockBatchValidator;
+    private readonly GetItemsAvailableStockBatchUseCase _getItemsAvailableStockBatchUseCase;
 
     public ItemsController(
         IJobExecutionCoordinator jobCoordinator,
         GetItemsBatchUseCase getItemsBatchUseCase,
-        IValidator<GetItemsBatchRequest> batchValidator)
+        IValidator<GetItemsBatchRequest> batchValidator,
+        GetItemsStockBatchUseCase getItemsStockBatchUseCase,
+        IValidator<GetItemsStockBatchRequest> stockBatchValidator,
+        GetItemsAvailableStockBatchUseCase getItemsAvailableStockBatchUseCase)
     {
         _jobCoordinator = jobCoordinator;
         _getItemsBatchUseCase = getItemsBatchUseCase;
         _batchValidator = batchValidator;
+        _getItemsStockBatchUseCase = getItemsStockBatchUseCase;
+        _stockBatchValidator = stockBatchValidator;
+        _getItemsAvailableStockBatchUseCase = getItemsAvailableStockBatchUseCase;
     }
 
     /// <summary>
@@ -109,4 +118,48 @@ public sealed class ItemsController : ControllerBase // NOSONAR
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
+
+    [HttpPost("stock/batch")]
+    [ProducesResponseType(typeof(ItemsStockBatchResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<ItemsStockBatchResponse>> GetStockBatch(
+        [FromBody] GetItemsStockBatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        var validation = await _stockBatchValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            foreach (var failure in validation.Errors)
+            {
+                ModelState.AddModelError(failure.PropertyName, failure.ErrorMessage);
+            }
+            return ValidationProblem(ModelState);
+        }
+
+        var result = await _getItemsStockBatchUseCase.ExecuteAsync(request, cancellationToken);
+        return Ok(result);
+    }
+
+    [HttpPost("stock/batch/sql")]
+    [ProducesResponseType(typeof(ItemsAvailableStockBatchResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ItemsAvailableStockBatchResponse>> GetAvailableStockBatch(
+    [FromBody] GetItemsStockBatchRequest request,
+    CancellationToken cancellationToken)
+    {
+        var validation = await _stockBatchValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            foreach (var failure in validation.Errors)
+            {
+                ModelState.AddModelError(failure.PropertyName, failure.ErrorMessage);
+            }
+            return ValidationProblem(ModelState);
+        }
+
+        var result = await _getItemsAvailableStockBatchUseCase.ExecuteAsync(request, cancellationToken);
+        return Ok(result);
+    }
+
 }

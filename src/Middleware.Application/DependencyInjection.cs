@@ -24,6 +24,10 @@ public static class DependencyInjection
         services.AddScoped<CreateStockTransferDirectUseCase>();
         services.AddScoped<CreateStockTransferWithBinsUseCase>();
         services.AddScoped<CreateStockTransferRequestUseCase>();
+        services.AddScoped<GetStockTransferByCorrelationIdUseCase>();
+        services.AddScoped<GetStockTransferStatusUseCase>();
+
+
         services.AddScoped<CreateDepositUseCase>();
         services.AddScoped<CreateGoodsReceiptUseCase>();
         services.AddScoped<CreateLiquidacionUseCase>();
@@ -33,7 +37,10 @@ public static class DependencyInjection
         services.AddScoped<UpdatePurchaseOrderUseCase>();
         services.AddScoped<GetItemUseCase>();
         services.AddScoped<GetItemStockUseCase>();
+        services.AddScoped<GetItemsAvailableStockBatchUseCase>();
+
         services.AddScoped<GetItemsBatchUseCase>();
+        services.AddScoped<GetItemsStockBatchUseCase>();
         services.AddScoped<GetBusinessPartnerUseCase>();
         services.AddScoped<GetInventoryTransferRequestsByCommentUseCase>();
         services.AddScoped<UpdateInventoryTransferRequestStatusUseCase>();
