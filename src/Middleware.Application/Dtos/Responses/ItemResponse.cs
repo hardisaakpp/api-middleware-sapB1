@@ -14,7 +14,10 @@ public sealed record ItemResponse(
     string? PackCode,
     int? GroupCode,
     string? GroupName,
-    string? PreferredVendorCode
+    string? PreferredVendorCode,
+    decimal? Pvp,
+    string? CodeBars,
+    string? Marca
 );
 
 public sealed record ItemStockResponse(

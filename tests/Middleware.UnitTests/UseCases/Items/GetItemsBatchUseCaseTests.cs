@@ -23,7 +23,7 @@ public sealed class GetItemsBatchUseCaseTests
         new(code, $"Nombre {code}", InventoryUoM: null, OnHand: 10m,
             PurchaseItem: true, SalesItem: true, InventoryItem: true, Valid: true, Frozen: false,
             ItemType: "itItems", PackCode: "X3", GroupCode: 103, GroupName: groupName,
-            PreferredVendorCode: null);
+            PreferredVendorCode: null, Pvp: null, CodeBars: null, Marca: null);
 
     [Fact]
     public async Task ExecuteAsync_FoundAndMissingCodes_SplitsIntoItemsAndNotFound()

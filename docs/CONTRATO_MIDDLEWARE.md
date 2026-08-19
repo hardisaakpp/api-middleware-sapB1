@@ -16,8 +16,33 @@
 
 Campos leídos: `itemCode`, `itemName`, `inventoryUoM`, `purchaseItem`, `salesItem`,
 `inventoryItem`, `valid`, `frozen`, `itemType`, `packCode`, `groupCode`, `groupName`,
-`preferredVendorCode`.
+`preferredVendorCode`, `pvp`, `codeBars`, `marca`.
 
+- ⚠️ `pvp` es el precio de la lista **"Precio Minorista" (`PriceList` 1 en SAP,
+  convención de negocio fija, no configurable por compañía)**. Se omite (ausente
+  del JSON) si el ítem no tiene esa lista de precio configurada. Alimenta la
+  validación obligatoria de Pack/PVP contra SAP (RN-02): si el PVP del Excel no
+  coincide con este valor, la carga del pedido se bloquea hasta que el usuario
+  elija cuál valor usar. **`ItemPrices` no es una navegación expandible en este
+  SAP** — Service Layer rechaza `$expand=ItemPrices` con `-1000 "Cannot expand
+  invalid navigation property"` (verificado en vivo el 2026-08-07). El middleware
+  lo resuelve con una llamada aparte al sub-recurso `Items('CODE')/ItemPrices`
+  por cada ítem — ver `GetPrecioMinoristaAsync` en `SapGateway.cs`. En
+  `POST /items/batch` esto significa **N llamadas a SAP además de la consulta
+  batch** (una por ítem resuelto, concurrentes, acotadas por el mismo
+  `SapThrottle`/`MaxConcurrentSapCalls` de siempre) — en este ambiente cada
+  llamada a SAP toma ~2.5s y no paraleliza bien (confirmado con llamadas
+  concurrentes puras, sin el middleware de por medio), así que un batch de
+  varios ítems con PVP puede añadir varios segundos de latencia. Es un costo
+  real, no un bug — no hay forma de traer el precio de varios ítems en una sola
+  llamada en este SAP (no existe una entidad de precios a nivel raíz que
+  soporte `$filter` por código).
+- ⚠️ `codeBars` viene del campo directo **`BarCode`** de la entidad `Items` (no
+  de la colección `ItemBarCodeCollection`, que es por-UoM). Se usa para
+  sincronizar el código de barras del pedido con el de SAP (fuente de verdad).
+  El nombre del campo en SAP es `BarCode` (singular) — `CodeBars` (como se
+  documentó el 2026-08-06) no existe en este SAP y su uso en `$select` era
+  rechazado con el mismo error `-1000`. Ver nota de honestidad más abajo.
 - ⚠️ `groupName` debe ser el texto exacto de `ItemGroups.GroupName` (tabla B1 `OITB`,
   ej. `"R-MEDIAS"`) — alimenta la regla de facturación de medias.
 - ⚠️ `inventoryUoM` viene de `InventoryUOM` (string legible, ej. `"UNIDAD"`), **no** de
@@ -139,3 +164,36 @@ documentada (reportes con joins que Service Layer no resuelve bien).
   tres puntos que lo usaban (`GetItemAsync`, `GetItemsForValidationAsync`,
   `GetItemStockAsync`) y verificado en vivo: `R215.810.NO` → `"UNIDAD"` idéntico en los
   tres endpoints.
+- 2026-08-06: `pvp` y `codeBars` en `GET /items/{itemCode}` y `POST /items/batch` — bug
+  real detectado en uso: la validación de Pack/PVP contra SAP (RN-02) en mba3-consultas
+  nunca podía marcar una discrepancia de PVP porque el middleware jamás pedía precio ni
+  código de barras a Service Layer (`$select` no los incluía, `ItemResponse` no tenía
+  esas propiedades). Se agregó `$expand=ItemPrices` a la consulta de ítem y se extrae
+  la entrada de `PriceList` 1 ("Precio Minorista"); `codeBars` se agregó al `$select`
+  existente (campo directo de `Items`, no requiere `$expand`). Pendiente de verificar en
+  vivo contra SAP real (los tests usan fixtures, no una consulta real a TEST_MABEL).
+- **2026-08-07 — corrección de lo anterior, esta vez sí verificado en vivo contra
+  TEST_MABEL real (no solo fixtures):** el cambio del 2026-08-06 nunca llegó a
+  funcionar contra SAP real — ambos campos fallaban, y no se detectó antes porque
+  mba3-consultas leía valores de caché poblados por el fallback OPENQUERY (que sí
+  funcionaba) y eso se confundió con éxito del middleware. Dos bugs distintos,
+  ambos de asunciones sobre el esquema de SAP sin verificar contra la instancia
+  real:
+  - `$expand=ItemPrices` es rechazado por este Service Layer con
+    `-1000 "Cannot expand invalid navigation property 'ItemPrices' for entity
+    type 'Item'"`, tanto en la consulta individual como en la de batch, tanto
+    para ítems existentes como inexistentes (100% reproducible, no era
+    intermitente). `ItemPrices` en este SAP solo es accesible como sub-recurso
+    directo (`Items('CODE')/ItemPrices`, sin `$expand` y sin soporte de
+    `$filter`). Corregido: `GetPrecioMinoristaAsync` hace esa llamada aparte,
+    por ítem; en el batch son N llamadas concurrentes (ver nota de rendimiento
+    arriba, en la sección del endpoint).
+  - `CodeBars` no existe como propiedad de `Item` en este SAP — rechazado con el
+    mismo `-1000`. El campo real es **`BarCode`** (singular). El nombre de la
+    propiedad JSON externa de este middleware (`codeBars`) no cambió, solo la
+    consulta interna a SAP.
+  - Verificado en vivo: `GET /items/{code}` y `POST /items/batch` contra
+    TEST_MABEL real, con ítems existentes e inexistentes, y con un ítem cuya
+    consulta de precio falla a propósito (para confirmar que no tumba el resto
+    del batch). 39 tests de integración + 29 unitarios, todos contra este
+    cambio.

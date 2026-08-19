@@ -81,7 +81,7 @@ public sealed class ItemsBatchEndpointTests : IClassFixture<WebApplicationFactor
         new(code, $"Nombre {code}", InventoryUoM: null, OnHand: 179m,
             PurchaseItem: true, SalesItem: true, InventoryItem: true, Valid: true, Frozen: false,
             ItemType: "itItems", PackCode: "X3", GroupCode: 103, GroupName: "R-MEDIAS",
-            PreferredVendorCode: "P001");
+            PreferredVendorCode: "P001", Pvp: null, CodeBars: null, Marca: null);
 
     [Fact]
     public async Task Post_MixOfExistingAndMissing_ReturnsItemsAndNotFound()
