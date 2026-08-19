@@ -27,6 +27,15 @@ public interface ISapGateway
     public Task UpdatePurchaseOrderAsync(int docEntry, UpdatePurchaseOrderRequest request, CancellationToken ct = default);
     public Task<ItemResponse?> GetItemAsync(string itemCode, CancellationToken ct = default);
 
+    /// <summary>Creates a SAP Item master record. Throws SapException with SAP's original status/body on failure (e.g. 400/-2035 duplicate ItemCode).</summary>
+    public Task CreateItemAsync(CreateItemRequest request, CancellationToken ct = default);
+
+    /// <summary>Partially updates a SAP Item master record — only the properties present in <paramref name="request"/> are sent.</summary>
+    public Task UpdateItemAsync(string itemCode, UpdateItemRequest request, CancellationToken ct = default);
+
+    /// <summary>Deletes a SAP Item master record. Throws SapException with SAP's original status/body on failure (e.g. 400 if the item has transactions and SAP refuses the delete).</summary>
+    public Task DeleteItemAsync(string itemCode, CancellationToken ct = default);
+
     /// <summary>
     /// Fetches full item master data for the given codes in a single Service Layer call.
     /// Codes that do not exist in SAP are simply absent from the result.
@@ -54,6 +63,18 @@ public interface ISapGateway
     /// Callers must keep <paramref name="warehouseCodes"/> at or below the SL page size (20).
     /// </summary>
     public Task<IReadOnlyList<WarehouseResponse>> GetWarehousesByCodesAsync(IReadOnlyList<string> warehouseCodes, CancellationToken ct = default);
+
+    /// <summary>Fetches the full SAP price list catalog (id + name only).</summary>
+    public Task<IReadOnlyList<PriceListResponse>> GetPriceListsAsync(CancellationToken ct = default);
+
+    /// <summary>True if at least one PurchaseOrder line references this ItemCode (existence check, $top=1).</summary>
+    public Task<bool> HasPurchaseOrderLineForItemAsync(string itemCode, CancellationToken ct = default);
+
+    /// <summary>True if at least one InventoryGenEntry (Deposit) line references this ItemCode (existence check, $top=1).</summary>
+    public Task<bool> HasInventoryGenEntryLineForItemAsync(string itemCode, CancellationToken ct = default);
+
+    /// <summary>True if at least one InventoryTransferRequest line references this ItemCode (existence check, $top=1).</summary>
+    public Task<bool> HasInventoryTransferRequestLineForItemAsync(string itemCode, CancellationToken ct = default);
 }
 
 public sealed record DocumentCreatedResult(int DocEntry, int DocNum);
@@ -72,5 +93,8 @@ public sealed record SapItemWarehouseData(
     string WarehouseCode,
     decimal InStock,
     decimal Committed,
-    bool Locked
+    bool Locked,
+    // Additive: needed so api-articulo-maestro's check_item_movements_in_sap parity check
+    // (InStock/Committed/Ordered > 0) can be reproduced against this same per-warehouse data.
+    decimal Ordered = 0m
 );
