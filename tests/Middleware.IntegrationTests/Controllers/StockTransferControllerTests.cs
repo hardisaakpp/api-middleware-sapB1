@@ -113,7 +113,9 @@ public sealed class StockTransferControllerTests : IClassFixture<WebApplicationF
             U_ORIGEN: null,
             Series: null,
             PriceList: null,
-            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 10m, "WH02")]
+            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 10m, "WH02")],
+            U_sap_id: null,
+            U_GUIA_LAAR: null
         );
 
         var response = await client.PostAsJsonAsync("/api/v1/stock-transfers/direct", request);
