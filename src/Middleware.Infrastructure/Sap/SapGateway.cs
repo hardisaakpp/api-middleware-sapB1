@@ -27,6 +27,9 @@ internal sealed class SapGateway : ISapGateway
     };
 
     private const string ValueProperty = "value";
+    private const string DocEntryProperty = "DocEntry";
+    private const string DocNumProperty = "DocNum";
+    private const string QuantityProperty = "Quantity";
     private const string ItemCodeProperty = "ItemCode";
     private const string WarehouseCodeProperty = "WarehouseCode";
     private const string DocumentLinesProperty = "DocumentLines";
@@ -118,14 +121,14 @@ internal sealed class SapGateway : ISapGateway
         }
         catch (TimeoutRejectedException) when (!string.IsNullOrEmpty(request.U_sap_id))
         {
-            _logger.LogWarning(
+            _logger.LogWarning( // NOSONAR
                 "SAP POST StockTransfers timed out for U_sap_id={USapId}. Checking for orphaned transfer...",
                 request.U_sap_id);
 
             var recovered = await FindStockTransferByCorrelationIdAsync(request.U_sap_id, ct);
             if (recovered is not null)
             {
-                _logger.LogWarning(
+                _logger.LogWarning( // NOSONAR
                     "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
                     recovered.DocEntry, recovered.DocNum, request.U_sap_id);
                 return recovered;
@@ -165,8 +168,8 @@ internal sealed class SapGateway : ISapGateway
 
         foreach (var item in arr.EnumerateArray())
         {
-            if (item.TryGetProperty("DocEntry", out var de) && de.TryGetInt32(out var docEntry) &&
-                item.TryGetProperty("DocNum", out var dn) && dn.TryGetInt32(out var docNum))
+            if (item.TryGetProperty(DocEntryProperty, out var de) && de.TryGetInt32(out var docEntry) &&
+                item.TryGetProperty(DocNumProperty, out var dn) && dn.TryGetInt32(out var docNum))
             {
                 return new DocumentCreatedResult(docEntry, docNum);
             }
@@ -239,25 +242,33 @@ internal sealed class SapGateway : ISapGateway
         int GetInt(string f) => root.TryGetProperty(f, out var p) && p.TryGetInt32(out var v) ? v : 0;
         string GetStr(string f) => root.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
 
-        var lines = new List<StockTransferLineStatusResponse>();
-        if (root.TryGetProperty("StockTransferLines", out var linesEl))
-        {
-            foreach (var line in linesEl.EnumerateArray())
-            {
-                string LineStr(string f) => line.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
-                decimal LineDec(string f) => line.TryGetProperty(f, out var p) && p.TryGetDecimal(out var v) ? v : 0m;
+        return new StockTransferStatusResponse(
+            GetInt(DocEntryProperty), GetInt(DocNumProperty), GetStr("FromWarehouse"), GetStr("ToWarehouse"),
+            ParseStockTransferLines(root));
+    }
 
-                lines.Add(new StockTransferLineStatusResponse(
-                    LineStr("ItemCode"),
-                    LineStr("ItemDescription"),
-                    LineDec("Quantity"),
-                    LineDec("RemainingOpenQuantity")
-                ));
-            }
+    private static List<StockTransferLineStatusResponse> ParseStockTransferLines(JsonElement root)
+    {
+        var lines = new List<StockTransferLineStatusResponse>();
+        if (!root.TryGetProperty("StockTransferLines", out var linesEl))
+        {
+            return lines;
         }
 
-        return new StockTransferStatusResponse(
-            GetInt("DocEntry"), GetInt("DocNum"), GetStr("FromWarehouse"), GetStr("ToWarehouse"), lines);
+        foreach (var line in linesEl.EnumerateArray())
+        {
+            string LineStr(string f) => line.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
+            decimal LineDec(string f) => line.TryGetProperty(f, out var p) && p.TryGetDecimal(out var v) ? v : 0m;
+
+            lines.Add(new StockTransferLineStatusResponse(
+                LineStr("ItemCode"),
+                LineStr("ItemDescription"),
+                LineDec(QuantityProperty),
+                LineDec("RemainingOpenQuantity")
+            ));
+        }
+
+        return lines;
     }
 
 
@@ -371,7 +382,7 @@ internal sealed class SapGateway : ISapGateway
             var recovered = await TryRecoverOrphanedOrderAsync(request.CardCode, request.Comments, ct);
             if (recovered is not null)
             {
-                _logger.LogWarning(
+                _logger.LogWarning( // NOSONAR
                     "Recovered orphaned PurchaseOrder: DocEntry={DocEntry}, DocNum={DocNum}, Comments='{Comments}'",
                     recovered.DocEntry, recovered.DocNum, request.Comments);
                 return recovered;
@@ -398,8 +409,8 @@ internal sealed class SapGateway : ISapGateway
 
             foreach (var item in arr.EnumerateArray())
             {
-                if (item.TryGetProperty("DocEntry", out var de) && de.TryGetInt32(out var docEntry) && // NOSONAR
-                    item.TryGetProperty("DocNum", out var dn) && dn.TryGetInt32(out var docNum)) // NOSONAR
+                if (item.TryGetProperty(DocEntryProperty, out var de) && de.TryGetInt32(out var docEntry) && // NOSONAR
+                    item.TryGetProperty(DocNumProperty, out var dn) && dn.TryGetInt32(out var docNum)) // NOSONAR
                 {
                     return new DocumentCreatedResult(docEntry, docNum);
                 }
@@ -465,7 +476,7 @@ internal sealed class SapGateway : ISapGateway
             {
                 ["AccountCode"] = NormalizeLiquidacionAccountCode(line.AccountCode),
                 ["ItemDescription"] = line.ItemDescription,
-                ["Quantity"] = line.Quantity,
+                [QuantityProperty] = line.Quantity,
                 ["UnitPrice"] = line.UnitPrice,
                 ["TaxCode"] = line.TaxCode,
                 ["CostingCode"] = line.CostingCode,
@@ -601,7 +612,7 @@ internal sealed class SapGateway : ISapGateway
                 .Select((l, i) => new PurchaseOrderLineResponse(
                     RequiredInt(l, "LineNum", $"DocumentLines[{i}]"),
                     RequiredString(l, ItemCodeProperty, $"DocumentLines[{i}]"),
-                    RequiredDecimal(l, "Quantity", $"DocumentLines[{i}]"),
+                    RequiredDecimal(l, QuantityProperty, $"DocumentLines[{i}]"),
                     RequiredDecimal(l, "OpenQuantity", $"DocumentLines[{i}]"),
                     RequiredDecimal(l, "UnitPrice", $"DocumentLines[{i}]"),
                     RequiredString(l, WarehouseCodeProperty, $"DocumentLines[{i}]")
@@ -609,8 +620,8 @@ internal sealed class SapGateway : ISapGateway
             : (IReadOnlyList<PurchaseOrderLineResponse>)[];
 
         return new PurchaseOrderResponse(
-            RequiredInt(root, "DocEntry", "root"),
-            RequiredInt(root, "DocNum", "root"),
+            RequiredInt(root, DocEntryProperty, "root"),
+            RequiredInt(root, DocNumProperty, "root"),
             RequiredString(root, "CardCode", "root"),
             RequiredString(root, "DocDate", "root"),
             RequiredString(root, "DocumentStatus", "root"),
@@ -1193,14 +1204,14 @@ internal sealed class SapGateway : ISapGateway
                 ? linesEl.EnumerateArray().Select((l, i) => new InventoryTransferRequestLineResponse(
                     l.TryGetProperty("LineNum", out var ln) && ln.TryGetInt32(out var lv) ? lv : i,
                     l.TryGetProperty(ItemCodeProperty, out var li) && li.ValueKind == JsonValueKind.String ? li.GetString()! : string.Empty,
-                    l.TryGetProperty("Quantity", out var lq) && lq.TryGetDecimal(out var lqv) ? lqv : 0m,
+                    l.TryGetProperty(QuantityProperty, out var lq) && lq.TryGetDecimal(out var lqv) ? lqv : 0m,
                     l.TryGetProperty(WarehouseCodeProperty, out var lw) && lw.ValueKind == JsonValueKind.String ? lw.GetString() : null
                 )).ToList()
                 : (IReadOnlyList<InventoryTransferRequestLineResponse>)[];
 
             return new InventoryTransferRequestResponse(
-                GetInt("DocEntry"),
-                GetInt("DocNum"),
+                GetInt(DocEntryProperty),
+                GetInt(DocNumProperty),
                 GetStrOpt("Comments"),
                 GetStr("FromWarehouse"),
                 GetStr("ToWarehouse"),
@@ -1500,12 +1511,12 @@ internal sealed class SapGateway : ISapGateway
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        if (!root.TryGetProperty("DocEntry", out var docEntryEl) || !docEntryEl.TryGetInt32(out var docEntry))
+        if (!root.TryGetProperty(DocEntryProperty, out var docEntryEl) || !docEntryEl.TryGetInt32(out var docEntry))
         {
             throw new SapResponseException("SAP no devolvió el campo 'DocEntry' en la respuesta de creación del documento");
         }
 
-        if (!root.TryGetProperty("DocNum", out var docNumEl) || !docNumEl.TryGetInt32(out var docNum))
+        if (!root.TryGetProperty(DocNumProperty, out var docNumEl) || !docNumEl.TryGetInt32(out var docNum))
         {
             throw new SapResponseException("SAP no devolvió el campo 'DocNum' en la respuesta de creación del documento");
         }
