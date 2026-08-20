@@ -36,6 +36,7 @@ public static class DependencyInjection
         services.AddScoped<GetPurchaseOrderUseCase>();
         services.AddScoped<GetPurchaseOrdersUseCase>();
         services.AddScoped<UpdatePurchaseOrderUseCase>();
+        services.AddScoped<UpdatePurchaseOrderStatusUseCase>();
         services.AddScoped<GetItemUseCase>();
         services.AddScoped<GetItemStockUseCase>();
         services.AddScoped<GetItemsBatchUseCase>();
@@ -48,6 +49,7 @@ public static class DependencyInjection
 
         services.AddScoped<IJobHandler, CreatePurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();
+        services.AddScoped<IJobHandler, UpdatePurchaseOrderStatusJobHandler>();
         services.AddScoped<IJobHandler, GetPurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, GetPurchaseOrdersJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferBasedOnDocumentJobHandler>();

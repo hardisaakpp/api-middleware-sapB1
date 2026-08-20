@@ -551,6 +551,24 @@ internal sealed class SapGateway : ISapGateway
         }
     }
 
+    public async Task UpdatePurchaseOrderStatusAsync(int docEntry, string status, CancellationToken ct = default)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            U_STATUS = status // NOSONAR
+        }, JsonOptions);
+
+        try
+        {
+            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"PurchaseOrders({docEntry})", payload, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP PurchaseOrder DocEntry={DocEntry} not found (SAP 404)", docEntry); // NOSONAR
+            throw;
+        }
+    }
+
     // InventoryUoMEntry is the numeric UoM entry id (e.g. -1); the human-readable UoM code
     // used across this API's "uomCode"/InventoryUoM fields is the string field InventoryUOM
     // (e.g. "UNIDAD") — confirmed against real Service Layer data.

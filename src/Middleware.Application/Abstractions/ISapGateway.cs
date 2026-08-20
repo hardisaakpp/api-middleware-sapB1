@@ -21,6 +21,7 @@ public interface ISapGateway
     public Task<PurchaseOrderResponse?> GetPurchaseOrderAsync(int docEntry, CancellationToken ct = default);
     public Task<PurchaseOrdersListResponse> GetPurchaseOrdersAsync(GetPurchaseOrdersRequest request, CancellationToken ct = default);
     public Task UpdatePurchaseOrderAsync(int docEntry, UpdatePurchaseOrderRequest request, CancellationToken ct = default);
+    public Task UpdatePurchaseOrderStatusAsync(int docEntry, string status, CancellationToken ct = default);
     public Task<ItemResponse?> GetItemAsync(string itemCode, CancellationToken ct = default);
 
     /// <summary>

@@ -131,4 +131,37 @@ public sealed class PurchaseOrdersController : ControllerBase // NOSONAR
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
+
+    [HttpPatch("{docEntry:int}/status")]
+    [ProducesResponseType(typeof(UpdatePurchaseOrderStatusResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> UpdateStatus(
+        int docEntry,
+        [FromBody] UpdatePurchaseOrderStatusRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.U_STATUS is not ("0" or "1" or "2"))
+        {
+            return BadRequest(new ProblemDetails { Title = "Invalid request", Detail = "U_STATUS must be '0', '1' or '2'." });
+        }
+
+        var fullRequest = request with { DocEntry = docEntry };
+        var payloadJson = JsonSerializer.Serialize(fullRequest);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "UpdatePurchaseOrderStatus",
+            $"PATCH /api/v1/purchase-orders/{docEntry}/status",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<UpdatePurchaseOrderStatusUseCase>().ExecuteAsync(fullRequest, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<UpdatePurchaseOrderStatusResponse> c => Ok(c.Response),
+            JobQueued<UpdatePurchaseOrderStatusResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
 }
