@@ -49,7 +49,43 @@ public interface ISapGateway
     /// Callers must keep <paramref name="warehouseCodes"/> at or below the SL page size (20).
     /// </summary>
     public Task<IReadOnlyList<WarehouseResponse>> GetWarehousesByCodesAsync(IReadOnlyList<string> warehouseCodes, CancellationToken ct = default);
+
+    /// <summary>
+    /// Same data as <see cref="GetItemStockAsync"/> but logs in against Sap:TestCompanyDb /
+    /// Sap:TestPassword — required to read the post-transfer stock of a StockTransfer created by
+    /// CreateStockTransferDirectAsync/BasedOnDocumentAsync/WithBinsAsync, which all run in the
+    /// test company, never in Sap:CompanyDb.
+    /// </summary>
+    public Task<ItemStockResponse?> GetItemStockForTestCompanyAsync(string itemCode, string warehouseCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Resolves, for each given warehouse code, whether it participates in WEBPOS (UDF
+    /// <c>U_WEBPOS</c>) and which WEBPOS "negocio" (UDF <c>U_NEGOCIO</c>) it belongs to. Logs in
+    /// against Sap:TestCompanyDb / Sap:TestPassword, matching the company used to create the
+    /// StockTransfer this is enriching. Codes not present in SAP are simply absent from the result.
+    /// </summary>
+    public Task<IReadOnlyDictionary<string, WarehousePosInfo>> GetWarehousesPosInfoForTestCompanyAsync(
+        IReadOnlyList<string> warehouseCodes, CancellationToken ct = default);
+
+    /// <summary>
+    /// Fetches an existing StockTransfer by DocEntry (lines + warehouses) from Sap:TestCompanyDb —
+    /// used to rebuild the WEBPOS notification payload on a manual retry, without keeping our own
+    /// copy of the transfer that could drift from SAP.
+    /// </summary>
+    public Task<StockTransferDocumentResponse?> GetStockTransferForTestCompanyAsync(int docEntry, CancellationToken ct = default);
 }
+
+public sealed record WarehousePosInfo(string WarehouseCode, bool IsPosEnabled, string? CodBusiness);
+
+public sealed record StockTransferDocumentResponse(
+    int DocEntry,
+    int DocNum,
+    string FromWarehouse,
+    string ToWarehouse,
+    IReadOnlyList<StockTransferDocumentLine> Lines
+);
+
+public sealed record StockTransferDocumentLine(string ItemCode, decimal Quantity, string WarehouseCode);
 
 public sealed record DocumentCreatedResult(int DocEntry, int DocNum);
 

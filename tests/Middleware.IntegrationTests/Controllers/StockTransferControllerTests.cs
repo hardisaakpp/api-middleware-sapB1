@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
+using Middleware.Application.Dtos.Responses;
+using Middleware.Domain.Enums;
 
 namespace Middleware.IntegrationTests.Controllers;
 
@@ -41,6 +43,23 @@ public sealed class StockTransferControllerTests : IClassFixture<WebApplicationF
                     .ReturnsAsync(new DocumentCreatedResult(46, 1005));
 
                 services.AddScoped<ISapGateway>(_ => mock.Object);
+
+                // These tests are only about the SAP-creation contract — replace the WEBPOS
+                // notifier with a fixed stub so they don't depend on WEBPOS/SQL infrastructure.
+                var notifierDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IWebPosStockTransferNotifier));
+                if (notifierDescriptor is not null)
+                {
+                    services.Remove(notifierDescriptor);
+                }
+
+                var notifierMock = new Mock<IWebPosStockTransferNotifier>();
+                notifierMock
+                    .Setup(n => n.NotifyAsync(
+                        It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>(),
+                        It.IsAny<IReadOnlyList<NotifyWebPosStockTransferLine>>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new WebPosSyncInfo(WebPosSyncStatus.Synced));
+
+                services.AddScoped<IWebPosStockTransferNotifier>(_ => notifierMock.Object);
             });
         });
     }

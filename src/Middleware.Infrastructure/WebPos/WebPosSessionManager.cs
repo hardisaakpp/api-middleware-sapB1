@@ -1,0 +1,107 @@
+using System.Text;
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Middleware.Infrastructure.Configuration;
+
+namespace Middleware.Infrastructure.WebPos;
+
+internal sealed class WebPosSessionManager : IWebPosSessionManager
+{
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly WebPosSettings _settings;
+    private readonly ILogger<WebPosSessionManager> _logger;
+    private readonly SemaphoreSlim _semaphore = new(1, 1);
+    private string? _token;
+    private DateTimeOffset _expiresAt = DateTimeOffset.MinValue;
+
+    public WebPosSessionManager(IHttpClientFactory httpClientFactory, IOptions<WebPosSettings> settings, ILogger<WebPosSessionManager> logger)
+    {
+        _httpClientFactory = httpClientFactory;
+        _settings = settings.Value;
+        _logger = logger;
+    }
+
+    public async Task<string> GetTokenAsync(CancellationToken ct = default)
+    {
+        if (_token is not null && DateTimeOffset.UtcNow < _expiresAt)
+        {
+            return _token;
+        }
+
+        await _semaphore.WaitAsync(ct);
+        try
+        {
+            if (_token is not null && DateTimeOffset.UtcNow < _expiresAt)
+            {
+                return _token;
+            }
+
+            await LoginAsync(ct);
+            return _token!;
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    public async Task InvalidateAsync(CancellationToken ct = default)
+    {
+        await _semaphore.WaitAsync(ct);
+        try
+        {
+            _token = null;
+            _expiresAt = DateTimeOffset.MinValue;
+            _logger.LogInformation("WEBPOS session invalidated");
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    private async Task LoginAsync(CancellationToken ct)
+    {
+        _logger.LogInformation("Logging in to WEBPOS");
+
+        var payload = JsonSerializer.Serialize(new { username = _settings.UserName, password = _settings.Password });
+
+        using var client = _httpClientFactory.CreateClient("WebPosLogin");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "apilogin/external")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json")
+        };
+
+        var response = await client.SendAsync(request, ct);
+        var content = await response.Content.ReadAsStringAsync(ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new WebPosException(response.StatusCode, content);
+        }
+
+        using var doc = JsonDocument.Parse(content);
+        var root = doc.RootElement;
+
+        if (!root.TryGetProperty("retorno", out var retorno) ||
+            retorno.ValueKind != JsonValueKind.Object ||
+            !retorno.TryGetProperty("token", out var tokenEl) ||
+            tokenEl.ValueKind != JsonValueKind.String)
+        {
+            throw new WebPosException(response.StatusCode, content);
+        }
+
+        _token = tokenEl.GetString();
+
+        var expirationSeconds = retorno.TryGetProperty("expiration_token", out var expEl) &&
+            expEl.TryGetInt32(out var exp) && exp > 0
+                ? exp
+                : 25 * 60;
+
+        // Refresh a bit before the real expiry so a request never races an about-to-expire token.
+        _expiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(60, expirationSeconds - 60));
+
+        _logger.LogInformation("WEBPOS session established, expires at {ExpiresAt:O}", _expiresAt);
+    }
+}

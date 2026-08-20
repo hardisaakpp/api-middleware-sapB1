@@ -8,11 +8,14 @@ namespace Middleware.Application.UseCases.StockTransfer;
 public sealed class CreateStockTransferDirectUseCase : IUseCase<CreateStockTransferDirectRequest, StockTransferResponse>
 {
     private readonly ISapGateway _gateway;
+    private readonly IWebPosStockTransferNotifier _webPosNotifier;
     private readonly ILogger<CreateStockTransferDirectUseCase> _logger;
 
-    public CreateStockTransferDirectUseCase(ISapGateway gateway, ILogger<CreateStockTransferDirectUseCase> logger)
+    public CreateStockTransferDirectUseCase(
+        ISapGateway gateway, IWebPosStockTransferNotifier webPosNotifier, ILogger<CreateStockTransferDirectUseCase> logger)
     {
         _gateway = gateway;
+        _webPosNotifier = webPosNotifier;
         _logger = logger;
     }
 
@@ -26,6 +29,12 @@ public sealed class CreateStockTransferDirectUseCase : IUseCase<CreateStockTrans
 
         _logger.LogInformation("Direct StockTransfer created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
 
-        return new StockTransferResponse(result.DocEntry, result.DocNum);
+        // SAP transfer is a done deal at this point — a slow/failing WEBPOS never re-triggers this.
+        var webPosSync = await _webPosNotifier.NotifyAsync(
+            result.DocEntry, result.DocNum, request.FromWarehouse, request.ToWarehouse,
+            request.StockTransferLines.Select(l => new NotifyWebPosStockTransferLine(l.ItemCode, l.Quantity)).ToList(),
+            cancellationToken);
+
+        return new StockTransferResponse(result.DocEntry, result.DocNum, webPosSync);
     }
 }

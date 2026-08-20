@@ -10,6 +10,7 @@ using Middleware.Infrastructure.Observability;
 using Middleware.Infrastructure.Resilience;
 using Middleware.Infrastructure.Sap;
 using Middleware.Infrastructure.Sql;
+using Middleware.Infrastructure.WebPos;
 
 namespace Middleware.Infrastructure;
 
@@ -46,12 +47,22 @@ public static class DependencyInjection
         PooledConnectionLifetime = TimeSpan.FromMinutes(3)
     };
 
+    // WEBPOS is a plain-HTTP LAN endpoint (no TLS to negotiate), but the same WPAD-hang risk as
+    // SAP applies (see BuildSapHandler) — disable the system proxy explicitly.
+    private static SocketsHttpHandler BuildWebPosHandler() => new()
+    {
+        UseProxy = false,
+        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(45),
+        PooledConnectionLifetime = TimeSpan.FromMinutes(3)
+    };
+
     public static IServiceCollection AddInfrastructure(
         this IServiceCollection services,
         IConfiguration configuration)
     {
         // Configuration
         services.Configure<SapSettings>(configuration.GetSection(SapSettings.SectionName));
+        services.Configure<WebPosSettings>(configuration.GetSection(WebPosSettings.SectionName));
         services.Configure<SqlSettings>(configuration.GetSection(SqlSettings.SectionName));
         services.Configure<JobQueueSettings>(configuration.GetSection(JobQueueSettings.SectionName));
 
@@ -74,19 +85,42 @@ public static class DependencyInjection
         .ConfigurePrimaryHttpMessageHandler(BuildSapHandler)
         .AddSapResiliencePipeline();
 
+        services.AddHttpClient("WebPosLogin", (sp, client) =>
+        {
+            var settings = sp.GetRequiredService<IOptions<WebPosSettings>>().Value;
+            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/'); // NOSONAR
+            client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
+        })
+        .ConfigurePrimaryHttpMessageHandler(BuildWebPosHandler);
+
+        services.AddHttpClient<IWebPosClient, WebPosClient>((sp, client) =>
+        {
+            var settings = sp.GetRequiredService<IOptions<WebPosSettings>>().Value;
+            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/'); // NOSONAR
+            client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds + 10);
+        })
+        .ConfigurePrimaryHttpMessageHandler(BuildWebPosHandler)
+        .AddWebPosResiliencePipeline();
+
         // Singletons: shared across all requests
         services.AddSingleton<ISapSessionManager, SapSessionManager>();
         services.AddSingleton<SapThrottle>();
         services.AddSingleton<ItemGroupsCache>();
         services.AddHostedService<SapSessionWarmupService>();
 
+        services.AddSingleton<IWebPosSessionManager, WebPosSessionManager>();
+        services.AddSingleton<WebPosThrottle>();
+        services.AddSingleton<WarehousePosInfoCache>();
+
         // Scoped: one gateway instance per HTTP request
         services.AddScoped<ISapGateway, SapGateway>();
+        services.AddScoped<IWebPosGateway, WebPosGateway>();
 
         // SQL
         services.AddScoped<ISqlRepository, SqlRepository>();
         services.AddScoped<IApiLogRepository, ApiLogRepository>();
         services.AddScoped<IJobQueueRepository, JobQueueRepository>();
+        services.AddScoped<IPosSyncStatusRepository, PosSyncStatusRepository>();
 
         // Job queue (durable async fallback for slow/saturated SAP calls)
         services.AddScoped<JobRunner>();

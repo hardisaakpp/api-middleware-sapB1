@@ -430,6 +430,58 @@ actual al armar el payload hacia SAP.
 
 ---
 
+## Sincronización de stock con WEBPOS
+
+`POST /stock-transfers/based-on-document`, `/direct` y `/with-bins` (no `/requests`, que no mueve
+stock) además avisan a WEBPOS/HITELL del movimiento, **encadenado dentro del mismo POST** — el
+cliente sigue llamando una sola vez. Después de que SAP confirma la transferencia, el middleware:
+
+1. Resuelve si `fromWarehouse`/`toWarehouse` están habilitados para WEBPOS (UDF `U_WEBPOS` en
+   `Warehouses`) y a qué "negocio" pertenecen (UDF `U_NEGOCIO`). Si ninguno de los dos almacenes
+   está habilitado, no se llama a WEBPOS — es un resultado de negocio correcto, no un error.
+2. Si aplica, calcula el stock absoluto post-transferencia por ítem/almacén y llama a WEBPOS
+   (`POST {webpos}/external/inventory/{codBusiness}`).
+3. Embebe el resultado en la respuesta bajo `webPosSync`:
+
+```json
+{
+  "docEntry": 45,
+  "docNum": 1004,
+  "webPosSync": { "status": "Synced" }
+}
+```
+
+`webPosSync.status` es uno de:
+
+| Status | Significado |
+|---|---|
+| `Synced` | WEBPOS aceptó la actualización de stock |
+| `SkippedNotPos` | Ninguno de los dos almacenes está habilitado para WEBPOS — no se llamó a WEBPOS |
+| `Rejected` | WEBPOS rechazó por una razón de negocio (`procesoCorrecto:false`, en cualquier HTTP status — WEBPOS usa tanto 200 como 400 para rechazos). `reason` trae el `mensaje` crudo de WEBPOS. **No se reintenta solo** — requiere corrección manual en WEBPOS y un reintento explícito (ver abajo) |
+| `Queued` | WEBPOS no respondió a tiempo o está saturado — se encoló como job independiente (mismo mecanismo de `docs/job-queue.md`, 5 intentos con backoff). `jobId` permite consultar `GET /jobs/{jobId}` |
+| `Error` | Cualquier otro fallo notificando a WEBPOS. La transferencia en SAP **ya quedó creada** — este campo nunca hace fallar el `201` de la transferencia |
+
+⚠️ Importante: un fallo o rechazo de WEBPOS **nunca** hace que la transferencia se reintente ni
+se re-cree en SAP — SAP y WEBPOS se tratan como dos pasos independientes con su propio ciclo de
+vida, encadenados solo para la respuesta del cliente.
+
+### POST /webpos/stock-transfers/{docEntry}/retry
+
+Reintenta **solo** la notificación a WEBPOS para una transferencia que ya existe en SAP —
+usar después de corregir manualmente en WEBPOS un rechazo (`Rejected`). Nunca vuelve a llamar a
+SAP para crear nada; relee la transferencia existente por `DocEntry` (líneas y almacenes) y
+recalcula el stock vigente en ese momento antes de reintentar.
+
+**Respuesta — 200 OK**, mismo cuerpo `webPosSync` descrito arriba.
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `404 Not Found` | El `DocEntry` no existe en SAP |
+
+---
+
 ## Entradas de Mercancía (Goods Receipts)
 
 ### POST /goods-receipts

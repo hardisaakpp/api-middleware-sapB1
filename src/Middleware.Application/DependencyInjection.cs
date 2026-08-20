@@ -13,6 +13,8 @@ using Middleware.Application.UseCases.PurchaseOrders;
 using Middleware.Application.UseCases.StockTransfer;
 using Middleware.Application.UseCases.Validations;
 using Middleware.Application.UseCases.Warehouses;
+using Middleware.Application.UseCases.WebPos;
+using Middleware.Application.WebPos;
 
 namespace Middleware.Application;
 
@@ -24,6 +26,9 @@ public static class DependencyInjection
         services.AddScoped<CreateStockTransferDirectUseCase>();
         services.AddScoped<CreateStockTransferWithBinsUseCase>();
         services.AddScoped<CreateStockTransferRequestUseCase>();
+        services.AddScoped<NotifyWebPosStockTransferUseCase>();
+        services.AddScoped<RetryWebPosStockTransferUseCase>();
+        services.AddScoped<IWebPosStockTransferNotifier, WebPosStockTransferNotifier>();
         services.AddScoped<CreateDepositUseCase>();
         services.AddScoped<CreateGoodsReceiptUseCase>();
         services.AddScoped<CreateLiquidacionUseCase>();
@@ -57,6 +62,7 @@ public static class DependencyInjection
         services.AddScoped<IJobHandler, GetItemStockJobHandler>();
         services.AddScoped<IJobHandler, GetInventoryTransferRequestsByCommentJobHandler>();
         services.AddScoped<IJobHandler, UpdateInventoryTransferRequestStatusJobHandler>();
+        services.AddScoped<IJobHandler, NotifyWebPosStockTransferJobHandler>();
 
         services.AddValidatorsFromAssemblyContaining<CreateStockTransferRequestValidator>(ServiceLifetime.Scoped);
 

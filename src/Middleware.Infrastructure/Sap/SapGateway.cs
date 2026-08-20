@@ -7,6 +7,7 @@ using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
 using Middleware.Infrastructure.Configuration;
+using Middleware.Infrastructure.WebPos;
 using Polly.Timeout;
 
 namespace Middleware.Infrastructure.Sap;
@@ -17,6 +18,7 @@ internal sealed class SapGateway : ISapGateway
     private readonly ISapServiceLayerClient _client;
     private readonly SapThrottle _throttle;
     private readonly ItemGroupsCache _itemGroupsCache;
+    private readonly WarehousePosInfoCache _warehousePosInfoCache;
     private readonly SapSettings _settings;
     private readonly ILogger<SapGateway> _logger;
 
@@ -35,6 +37,7 @@ internal sealed class SapGateway : ISapGateway
         ISapServiceLayerClient client,
         SapThrottle throttle,
         ItemGroupsCache itemGroupsCache,
+        WarehousePosInfoCache warehousePosInfoCache,
         IOptions<SapSettings> settings,
         ILogger<SapGateway> logger)
     {
@@ -42,6 +45,7 @@ internal sealed class SapGateway : ISapGateway
         _client = client;
         _throttle = throttle;
         _itemGroupsCache = itemGroupsCache;
+        _warehousePosInfoCache = warehousePosInfoCache;
         _settings = settings.Value;
         _logger = logger;
     }
@@ -726,7 +730,18 @@ internal sealed class SapGateway : ISapGateway
             : null;
     }
 
-    public async Task<ItemStockResponse?> GetItemStockAsync(string itemCode, string warehouseCode, CancellationToken ct = default)
+    public Task<ItemStockResponse?> GetItemStockAsync(string itemCode, string warehouseCode, CancellationToken ct = default)
+        => GetItemStockInternalAsync(itemCode, warehouseCode, companyDb: null, password: null, ct);
+
+    /// <summary>Same data as <see cref="GetItemStockAsync"/> but against Sap:TestCompanyDb — see interface doc.</summary>
+    public Task<ItemStockResponse?> GetItemStockForTestCompanyAsync(string itemCode, string warehouseCode, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+        return GetItemStockInternalAsync(itemCode, warehouseCode, _settings.TestCompanyDb, _settings.TestPassword, ct);
+    }
+
+    private async Task<ItemStockResponse?> GetItemStockInternalAsync(
+        string itemCode, string warehouseCode, string? companyDb, string? password, CancellationToken ct)
     {
         string json;
         try
@@ -735,7 +750,7 @@ internal sealed class SapGateway : ISapGateway
             // Fetch the item with its per-warehouse collection and filter in-memory; // NOSONAR
             // SAP SL does not support $filter inside nested collections via OData.
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items('{encoded}')?$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, ct);
+                $"Items('{encoded}')?$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, companyDb, password, ct);
         }
         catch (SapException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -775,6 +790,119 @@ internal sealed class SapGateway : ISapGateway
 
         // Warehouse found in SAP catalog but no entry for this warehouse → stock 0
         return new ItemStockResponse(itemCode, warehouseCode, 0m, 0m, uomCode, Locked: false);
+    }
+
+    public async Task<IReadOnlyDictionary<string, WarehousePosInfo>> GetWarehousesPosInfoForTestCompanyAsync(
+        IReadOnlyList<string> warehouseCodes, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+
+        if (warehouseCodes.Count == 0)
+        {
+            return new Dictionary<string, WarehousePosInfo>();
+        }
+
+        var fullMap = await _warehousePosInfoCache.GetOrLoadAsync(
+            _settings.TestCompanyDb!, loaderCt => LoadWarehousesPosInfoAsync(loaderCt), ct);
+
+        return warehouseCodes
+            .Where(fullMap.ContainsKey)
+            .ToDictionary(code => code, code => fullMap[code]);
+    }
+
+    private async Task<IReadOnlyDictionary<string, WarehousePosInfo>> LoadWarehousesPosInfoAsync(CancellationToken ct)
+    {
+        var result = new Dictionary<string, WarehousePosInfo>();
+        string? resource = "Warehouses?$select=WarehouseCode,U_WEBPOS,U_NEGOCIO";
+
+        const int maxPages = 100;
+        for (var page = 0; resource is not null && page < maxPages; page++)
+        {
+            var json = await ExecuteWithRetryOn401Async(
+                HttpMethod.Get, resource, null, _settings.TestCompanyDb, _settings.TestPassword, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty(ValueProperty, out var arr))
+            {
+                foreach (var entry in arr.EnumerateArray())
+                {
+                    if (!entry.TryGetProperty(WarehouseCodeProperty, out var wc) || wc.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+
+                    var code = wc.GetString()!;
+
+                    // U_WEBPOS is a plain alphanumeric UDF ('S'/other), not a SAP boolean field —
+                    // it must be compared as a string, unlike IsTyes()'s tYES/tNO encoding.
+                    var isPosEnabled = entry.TryGetProperty("U_WEBPOS", out var wp) &&
+                        wp.ValueKind == JsonValueKind.String &&
+                        string.Equals(wp.GetString(), "S", StringComparison.OrdinalIgnoreCase);
+
+                    var codBusiness = entry.TryGetProperty("U_NEGOCIO", out var neg) &&
+                        neg.ValueKind == JsonValueKind.String &&
+                        !string.IsNullOrWhiteSpace(neg.GetString())
+                            ? neg.GetString()
+                            : null;
+
+                    result[code] = new WarehousePosInfo(code, isPosEnabled, codBusiness);
+                }
+            }
+
+            resource = GetNextLink(root);
+        }
+
+        return result;
+    }
+
+    public async Task<StockTransferDocumentResponse?> GetStockTransferForTestCompanyAsync(int docEntry, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+
+        string json;
+        try
+        {
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"StockTransfers({docEntry})?$select=DocEntry,DocNum,FromWarehouse,ToWarehouse,StockTransferLines",
+                null, _settings.TestCompanyDb, _settings.TestPassword, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP StockTransfer DocEntry={DocEntry} not found (test company)", docEntry); // NOSONAR
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        int GetInt(string f) => root.TryGetProperty(f, out var p) && p.TryGetInt32(out var v) ? v : 0;
+        string GetStr(string f) => root.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
+
+        var fromWarehouse = GetStr("FromWarehouse");
+        var toWarehouse = GetStr("ToWarehouse");
+
+        var lines = new List<StockTransferDocumentLine>();
+        if (root.TryGetProperty("StockTransferLines", out var linesEl) && linesEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var line in linesEl.EnumerateArray())
+            {
+                if (!line.TryGetProperty(ItemCodeProperty, out var ic) || ic.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var quantity = line.TryGetProperty("Quantity", out var q) && q.TryGetDecimal(out var qv) ? qv : 0m;
+                var warehouseCode = line.TryGetProperty(WarehouseCodeProperty, out var w) && w.ValueKind == JsonValueKind.String
+                    ? w.GetString()!
+                    : toWarehouse;
+
+                lines.Add(new StockTransferDocumentLine(ic.GetString()!, quantity, warehouseCode));
+            }
+        }
+
+        return new StockTransferDocumentResponse(GetInt("DocEntry"), GetInt("DocNum"), fromWarehouse, toWarehouse, lines);
     }
 
     public async Task<BusinessPartnerResponse?> GetBusinessPartnerAsync(string cardCode, CancellationToken ct = default)
