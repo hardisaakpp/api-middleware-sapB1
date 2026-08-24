@@ -731,7 +731,20 @@ internal sealed class SapGateway : ISapGateway
 
         // Dictionary<TKey,TValue> serialization does not honour DefaultIgnoreCondition.WhenWritingNull —
         // strip unset fields explicitly so a PATCH only carries the properties the caller actually set.
-        return payload.Where(kv => kv.Value is not null).ToDictionary(kv => kv.Key, kv => kv.Value);
+        var dict = payload.Where(kv => kv.Value is not null).ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        // Convert explicitly sent empty strings ("") to actual nulls for OData Service Layer.
+        // This allows Python to send {"ValidFrom": ""} and ensures SAP SL receives {"ValidFrom": null}
+        // to properly clear an optional property without breaking the global null-stripping logic.
+        foreach (var key in dict.Keys.ToList())
+        {
+            if (dict[key] is string s && s == "")
+            {
+                dict[key] = null;
+            }
+        }
+
+        return dict;
     }
 
     private static Dictionary<string, object?> ExtractItemFields(CreateItemRequest r) => new()
@@ -762,6 +775,11 @@ internal sealed class SapGateway : ISapGateway
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
         [FrozenProperty] = r.Frozen,
+        ["Valid"] = r.Valid,
+        ["ValidFrom"] = r.ValidFrom,
+        ["ValidTo"] = r.ValidTo,
+        ["FrozenFrom"] = r.FrozenFrom,
+        ["FrozenTo"] = r.FrozenTo,
         ["Properties63"] = r.Properties63,
         ["LeadTime"] = r.LeadTime,
         ["MinOrderQuantity"] = r.MinOrderQuantity,
@@ -827,6 +845,11 @@ internal sealed class SapGateway : ISapGateway
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
         [FrozenProperty] = r.Frozen,
+        ["Valid"] = r.Valid,
+        ["ValidFrom"] = r.ValidFrom,
+        ["ValidTo"] = r.ValidTo,
+        ["FrozenFrom"] = r.FrozenFrom,
+        ["FrozenTo"] = r.FrozenTo,
         ["Properties63"] = r.Properties63,
         ["LeadTime"] = r.LeadTime,
         ["MinOrderQuantity"] = r.MinOrderQuantity,

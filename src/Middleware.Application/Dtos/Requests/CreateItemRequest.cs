@@ -37,6 +37,11 @@ public sealed record CreateItemRequest(
     string? PlanningSystem = null,
     string? ProcurementMethod = null,
     string? Frozen = null,
+    string? Valid = null,
+    string? ValidFrom = null,
+    string? ValidTo = null,
+    string? FrozenFrom = null,
+    string? FrozenTo = null,
     string? Properties63 = null,
     int? LeadTime = null,
     decimal? MinOrderQuantity = null,
@@ -93,6 +98,7 @@ public sealed class CreateItemRequestValidator : AbstractValidator<CreateItemReq
         RuleFor(x => x.IndirectTax).Must(SapItemEnums.BeValidYesNoOrNull).WithMessage(SapItemEnums.YesNoMessage);
         RuleFor(x => x.ManageBatchNumbers).Must(SapItemEnums.BeValidYesNoOrNull).WithMessage(SapItemEnums.YesNoMessage);
         RuleFor(x => x.Frozen).Must(SapItemEnums.BeValidYesNoOrNull).WithMessage(SapItemEnums.YesNoMessage);
+        RuleFor(x => x.Valid).Must(SapItemEnums.BeValidYesNoOrNull).WithMessage(SapItemEnums.YesNoMessage);
         RuleFor(x => x.Properties63).Must(SapItemEnums.BeValidYesNoOrNull).WithMessage(SapItemEnums.YesNoMessage);
 
         RuleFor(x => x.ItemType).Must(SapItemEnums.BeValidItemTypeOrNull).WithMessage(SapItemEnums.ItemTypeMessage);
