@@ -14,8 +14,6 @@ Log.Logger = new LoggerConfiguration()
 
 try
 {
-    DotNetEnv.Env.TraversePath().Load();
-
     var builder = WebApplication.CreateBuilder(args);
 
     // Local secrets layer, on top of appsettings.{Environment}.json — see docs/configuration.md
