@@ -1,0 +1,13 @@
+services:
+  middleware-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8011:8080"
+    environment:
+      # Sin esto el contenedor arranca en Production: sin Swagger, sin logs
+      # a consola y con redirect HTTPS forzado. Ver StartupConfiguration.cs.
+      - ASPNETCORE_ENVIRONMENT=Development
+    volumes:
+      - ./src/Middleware.Api/logs:/app/logs
