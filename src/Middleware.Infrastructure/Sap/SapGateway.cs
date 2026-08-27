@@ -1127,39 +1127,73 @@ internal sealed class SapGateway : ISapGateway
         return new ItemStockResponse(itemCode, warehouseCode, 0m, 0m, uomCode, Locked: false);
     }
 
+    // Usa la User Query STOCK_BODEGA (sml.svc) en vez de Items+ItemWarehouseInfoCollection:
+    // esa colección no se puede filtrar por bodega en Service Layer (confirmado: $expand y
+    // $filter/any() son rechazados por SAP), así que Items traía las ~305 bodegas de cada
+    // ítem para quedarnos con 1. STOCK_BODEGA ya filtra por WhsCode+ItemCode en origen, pero
+    // pagina de a 20 filas sin importar cuántos ItemCode se pidan, de ahí el loop de nextLink.
+    // Trade-off aceptado: la vista solo expone OnHand, no IsCommitted/UoM/Locked (quedan en
+    // valor por defecto) — el consumidor ya no ve el stock comprometido en SAP para ítems
+    // fuera de sus propias reservas.
     public async Task<(IReadOnlyList<ItemStockResponse> Items, IReadOnlyList<string> NotFound)> GetItemsStockBatchAsync(
-    string warehouseCode, IReadOnlyList<string> itemCodes, CancellationToken ct = default)
+        string warehouseCode, IReadOnlyList<string> itemCodes, CancellationToken ct = default)
     {
         if (itemCodes.Count == 0)
         {
             return ([], []);
         }
 
-        var validationData = await GetItemsForValidationAsync(itemCodes, ct);
-        var foundByCode = validationData.ToDictionary(i => i.ItemCode, StringComparer.OrdinalIgnoreCase);
+        var itemFilter = string.Join(" or ", itemCodes.Select(c => $"ItemCode eq '{c.Replace("'", "''")}'"));
+        var escapedWarehouse = warehouseCode.Replace("'", "''");
+        string? resource = $"sml.svc/STOCK_BODEGA?$filter=WhsCode eq '{escapedWarehouse}' and ({itemFilter})";
+
+        var foundByCode = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+
+        while (resource is not null)
+        {
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty(ValueProperty, out var arr))
+            {
+                foreach (var item in arr.EnumerateArray())
+                {
+                    if (item.TryGetProperty(ItemCodeProperty, out var ic) && ic.ValueKind == JsonValueKind.String &&
+                        item.TryGetProperty("OnHand", out var oh) && oh.TryGetDecimal(out var onHand))
+                    {
+                        foundByCode[ic.GetString()!] = onHand;
+                    }
+                }
+            }
+
+            // SAP devuelve el nextLink relativo a sml.svc/ (ej. "STOCK_BODEGA?$skip=20"), sin
+            // el prefijo — hay que reponerlo o la siguiente página resuelve "Service Not Found".
+            if (root.TryGetProperty("@odata.nextLink", out var nextLink) && nextLink.ValueKind == JsonValueKind.String)
+            {
+                var next = nextLink.GetString()!;
+                resource = next.StartsWith("sml.svc/", StringComparison.OrdinalIgnoreCase) ? next : $"sml.svc/{next}";
+            }
+            else
+            {
+                resource = null;
+            }
+        }
 
         var items = new List<ItemStockResponse>();
         var notFound = new List<string>();
 
         foreach (var itemCode in itemCodes)
         {
-            if (!foundByCode.TryGetValue(itemCode, out var item))
+            if (foundByCode.TryGetValue(itemCode, out var onHand))
+            {
+                items.Add(new ItemStockResponse(itemCode, warehouseCode, onHand, 0m, null, false));
+            }
+            else
             {
                 notFound.Add(itemCode);
-                continue;
             }
-
-            var warehouse = item.Warehouses.FirstOrDefault(w =>
-                string.Equals(w.WarehouseCode, warehouseCode, StringComparison.OrdinalIgnoreCase));
-
-            if (warehouse is null)
-            {
-                notFound.Add(itemCode);
-                continue;
-            }
-
-            items.Add(new ItemStockResponse(
-                item.ItemCode, warehouseCode, warehouse.InStock, warehouse.Committed, item.InventoryUoM, warehouse.Locked));
         }
 
         return (items, notFound);
