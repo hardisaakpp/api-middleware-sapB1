@@ -1128,13 +1128,7 @@ internal sealed class SapGateway : ISapGateway
     }
 
     // Usa la User Query STOCK_BODEGA (sml.svc) en vez de Items+ItemWarehouseInfoCollection:
-    // esa colección no se puede filtrar por bodega en Service Layer (confirmado: $expand y
-    // $filter/any() son rechazados por SAP), así que Items traía las ~305 bodegas de cada
-    // ítem para quedarnos con 1. STOCK_BODEGA ya filtra por WhsCode+ItemCode en origen, pero
-    // pagina de a 20 filas sin importar cuántos ItemCode se pidan, de ahí el loop de nextLink.
-    // Trade-off aceptado: la vista solo expone OnHand, no IsCommitted/UoM/Locked (quedan en
-    // valor por defecto) — el consumidor ya no ve el stock comprometido en SAP para ítems
-    // fuera de sus propias reservas.
+    // esa colección no se puede filtrar por bodega en Service Layer 
     public async Task<(IReadOnlyList<ItemStockResponse> Items, IReadOnlyList<string> NotFound)> GetItemsStockBatchAsync(
         string warehouseCode, IReadOnlyList<string> itemCodes, CancellationToken ct = default)
     {
@@ -1156,31 +1150,46 @@ internal sealed class SapGateway : ISapGateway
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            if (root.TryGetProperty(ValueProperty, out var arr))
-            {
-                foreach (var item in arr.EnumerateArray())
-                {
-                    if (item.TryGetProperty(ItemCodeProperty, out var ic) && ic.ValueKind == JsonValueKind.String &&
-                        item.TryGetProperty("OnHand", out var oh) && oh.TryGetDecimal(out var onHand))
-                    {
-                        foundByCode[ic.GetString()!] = onHand;
-                    }
-                }
-            }
-
-            // SAP devuelve el nextLink relativo a sml.svc/ (ej. "STOCK_BODEGA?$skip=20"), sin
-            // el prefijo — hay que reponerlo o la siguiente página resuelve "Service Not Found".
-            if (root.TryGetProperty("@odata.nextLink", out var nextLink) && nextLink.ValueKind == JsonValueKind.String)
-            {
-                var next = nextLink.GetString()!;
-                resource = next.StartsWith("sml.svc/", StringComparison.OrdinalIgnoreCase) ? next : $"sml.svc/{next}";
-            }
-            else
-            {
-                resource = null;
-            }
+            CollectStockBodegaPage(root, foundByCode);
+            resource = GetNextStockBodegaPageResource(root);
         }
 
+        return SplitFoundAndNotFound(warehouseCode, itemCodes, foundByCode);
+    }
+
+    private static void CollectStockBodegaPage(JsonElement root, Dictionary<string, decimal> foundByCode)
+    {
+        if (!root.TryGetProperty(ValueProperty, out var arr))
+        {
+            return;
+        }
+
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.TryGetProperty(ItemCodeProperty, out var ic) && ic.ValueKind == JsonValueKind.String &&
+                item.TryGetProperty("OnHand", out var oh) && oh.TryGetDecimal(out var onHand))
+            {
+                foundByCode[ic.GetString()!] = onHand;
+            }
+        }
+    }
+
+    // SAP devuelve el nextLink relativo a sml.svc/ (ej. "STOCK_BODEGA?$skip=20"), sin el
+    // prefijo — hay que reponerlo o la siguiente página resuelve "Service Not Found".
+    private static string? GetNextStockBodegaPageResource(JsonElement root)
+    {
+        if (!root.TryGetProperty("@odata.nextLink", out var nextLink) || nextLink.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var next = nextLink.GetString()!;
+        return next.StartsWith("sml.svc/", StringComparison.OrdinalIgnoreCase) ? next : $"sml.svc/{next}";
+    }
+
+    private static (IReadOnlyList<ItemStockResponse> Items, IReadOnlyList<string> NotFound) SplitFoundAndNotFound(
+        string warehouseCode, IReadOnlyList<string> itemCodes, Dictionary<string, decimal> foundByCode)
+    {
         var items = new List<ItemStockResponse>();
         var notFound = new List<string>();
 
