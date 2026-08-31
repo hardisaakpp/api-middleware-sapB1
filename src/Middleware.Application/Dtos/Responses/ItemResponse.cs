@@ -17,6 +17,9 @@ public sealed record ItemResponse(
     int? GroupCode,
     string? GroupName,
     string? PreferredVendorCode,
+    decimal? Pvp,
+    string? CodeBars,
+    string? Marca,
     // Only populated by GetItemsByCodesAsync (POST /items/batch), which requests
     // ItemWarehouseInfoCollection in its $select; GetItemAsync (GET /items/{itemCode})
     // does not request it, so this stays null there. Additive field — does not change

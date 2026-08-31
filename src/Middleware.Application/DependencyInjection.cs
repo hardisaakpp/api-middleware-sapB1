@@ -68,6 +68,7 @@ public static class DependencyInjection
         services.AddScoped<IJobHandler, GetBusinessPartnerJobHandler>();
         services.AddScoped<IJobHandler, GetItemJobHandler>();
         services.AddScoped<IJobHandler, GetItemStockJobHandler>();
+        services.AddScoped<IJobHandler, GetItemsBatchJobHandler>();
         services.AddScoped<IJobHandler, CreateItemJobHandler>();
         services.AddScoped<IJobHandler, UpdateItemJobHandler>();
         services.AddScoped<IJobHandler, DeleteItemJobHandler>();

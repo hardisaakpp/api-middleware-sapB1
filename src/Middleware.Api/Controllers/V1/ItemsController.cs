@@ -20,7 +20,6 @@ namespace Middleware.Api.Controllers.V1;
 public sealed class ItemsController : ControllerBase // NOSONAR
 {
     private readonly IJobExecutionCoordinator _jobCoordinator;
-    private readonly GetItemsBatchUseCase _getItemsBatchUseCase;
     private readonly IValidator<GetItemsBatchRequest> _batchValidator;
     private readonly GetItemsStockBatchUseCase _getItemsStockBatchUseCase;
     private readonly IValidator<GetItemsStockBatchRequest> _stockBatchValidator;
@@ -28,14 +27,12 @@ public sealed class ItemsController : ControllerBase // NOSONAR
 
     public ItemsController(
         IJobExecutionCoordinator jobCoordinator,
-        GetItemsBatchUseCase getItemsBatchUseCase,
         IValidator<GetItemsBatchRequest> batchValidator,
         GetItemsStockBatchUseCase getItemsStockBatchUseCase,
         IValidator<GetItemsStockBatchRequest> stockBatchValidator,
         GetItemsAvailableStockBatchUseCase getItemsAvailableStockBatchUseCase)
     {
         _jobCoordinator = jobCoordinator;
-        _getItemsBatchUseCase = getItemsBatchUseCase;
         _batchValidator = batchValidator;
         _getItemsStockBatchUseCase = getItemsStockBatchUseCase;
         _stockBatchValidator = stockBatchValidator;
@@ -46,12 +43,16 @@ public sealed class ItemsController : ControllerBase // NOSONAR
     /// Fetches full master data for up to 100 items in a single call. Codes that do not
     /// exist in SAP are listed in notFound; result order is not guaranteed. A Service
     /// Layer connectivity failure fails the whole request (no silent partial results).
+    /// Follows the same job-queue pattern as the sibling item endpoints: a healthy batch
+    /// completes inline and returns 200; if SAP is slow past QueueAfterSeconds or fails
+    /// transiently, the work is durably queued and 202 + jobId is returned to poll via
+    /// GET /api/v1/jobs/{jobId} (instead of an immediate, non-recoverable 503).
     /// </summary>
     [HttpPost("batch")]
     [ProducesResponseType(typeof(ItemsBatchResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
-    public async Task<ActionResult<ItemsBatchResponse>> GetBatch(
+    public async Task<IActionResult> GetBatch(
         [FromBody] GetItemsBatchRequest request,
         CancellationToken cancellationToken)
     {
@@ -65,8 +66,22 @@ public sealed class ItemsController : ControllerBase // NOSONAR
             return ValidationProblem(ModelState);
         }
 
-        var result = await _getItemsBatchUseCase.ExecuteAsync(request, cancellationToken);
-        return Ok(result);
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetItemsBatch",
+            "POST /api/v1/items/batch",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetItemsBatchUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<ItemsBatchResponse> c => Ok(c.Response),
+            JobQueued<ItemsBatchResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
     }
 
     /// <summary>

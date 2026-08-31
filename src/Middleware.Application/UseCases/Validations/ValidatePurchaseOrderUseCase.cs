@@ -60,9 +60,7 @@ public sealed class ValidatePurchaseOrderUseCase : IUseCase<ValidatePurchaseOrde
                 lock (sync)
                 {
                     foreach (var d in data)
-                    {
                         itemData[d.ItemCode] = d;
-                    }
                 }
             }
             catch (Exception ex)
@@ -74,9 +72,7 @@ public sealed class ValidatePurchaseOrderUseCase : IUseCase<ValidatePurchaseOrde
                 lock (sync)
                 {
                     foreach (var code in chunk)
-                    {
                         itemErrors[code] = error;
-                    }
                 }
             }
             finally

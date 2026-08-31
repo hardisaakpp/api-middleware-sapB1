@@ -614,7 +614,8 @@ por SKU exacto (pack, grupo y proveedor preferido).
   "packCode": "X1",
   "groupCode": 103,
   "groupName": "R-MEDIAS",
-  "preferredVendorCode": "P1790389219001"
+  "preferredVendorCode": "P1790389219001",
+  "marca": "Roland"
 }
 ```
 
@@ -625,6 +626,7 @@ por SKU exacto (pack, grupo y proveedor preferido).
 | `groupCode` | `ItemsGroupCode` | `null` si SL no lo devuelve |
 | `groupName` | `ItemGroups.GroupName` | Resuelto vía cache en memoria del mapa código→nombre (TTL `Sap:ItemGroupsCacheMinutes`, default 360). `null` si el grupo no se puede resolver; siempre coherente con `groupCode` |
 | `preferredVendorCode` | `Mainsupplier` | `null` si el ítem no tiene proveedor preferido (`""` de SL se normaliza a `null`) |
+| `marca` | `U_MARCA` (UDF) | `null` si el ítem no lo tiene. Si la base no tiene el UDF, el middleware reintenta el `$select` sin él (junto con `packCode`) y devuelve `null` |
 
 Los campos con valor `null` se omiten del JSON (política global de la API).
 

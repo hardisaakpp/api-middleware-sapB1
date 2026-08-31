@@ -291,14 +291,30 @@ internal sealed class SapGateway : ISapGateway
         {
             DocDate = DateTime.Now.ToString("yyyy-MM-dd"), // NOSONAR
             request.Comments,
-            FromWarehouse = request.FromWarehouse,
-            ToWarehouse = request.ToWarehouse,
-            request.U_ORIGEN,
+            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
+            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
+            PriceList = -2,
+            FromWarehouse = request.FromWarehouse, // NOSONAR
+            ToWarehouse = request.ToWarehouse, // NOSONAR
+            // U_ODC (UDF con el nº de OC de origen) y Series los incluye el payload del flujo
+            // Python que sí funciona. U_ODC es el candidato más probable del error 1299
+            // "no data found" de la TN custom (hace lookup contra la OC). Se omiten solos si
+            // el request no los trae (WhenWritingNull).
+            U_ODC = request.UOdc,
             Series = request.Series,
-            StockTransferLines = request.StockTransferLines.Select(l => new
+            // Tag de sistema origen (mismo UDF que el resto de los Create*Request); opcional,
+            // se omite si no viene.
+            request.U_ORIGEN,
+            // ITR: la bodega va normalmente SOLO en la cabecera (FromWarehouse/ToWarehouse). El
+            // flujo Python que sí funciona manda únicamente ItemCode/Quantity por línea (sin
+            // WarehouseCode, que queda null y se omite -- WhenWritingNull); queda disponible para
+            // quien necesite un destino distinto por línea, igual que en las variantes Direct/
+            // BasedOnDocument/WithBins.
+            StockTransferLines = request.Lines.Select(l => new
             {
                 l.ItemCode,
                 l.Quantity,
+                l.ProjectCode,
                 l.WarehouseCode
             })
         }, JsonOptions);
@@ -890,9 +906,19 @@ internal sealed class SapGateway : ISapGateway
     // InventoryUoMEntry is the numeric UoM entry id (e.g. -1); the human-readable UoM code
     // used across this API's "uomCode"/InventoryUoM fields is the string field InventoryUOM
     // (e.g. "UNIDAD") — confirmed against real Service Layer data.
+    //
+    // The field is "BarCode" (singular), not "CodeBars" — this SAP instance rejects
+    // "CodeBars" with -1000 "Property 'CodeBars' of 'Item' is invalid" (verified live
+    // 2026-08-07; the original 2026-08-06 fix never hit real SAP, only fixtures). The
+    // external contract's JSON property stays "codeBars" (camelCase) — only the SAP
+    // query field name was wrong, not this API's own response shape.
     private const string ItemSelectFields =
         "ItemCode,ItemName,InventoryUOM,QuantityOnStock,PurchaseItem,SalesItem,InventoryItem," +
-        "Valid,Frozen,ItemType,ItemsGroupCode,Mainsupplier";
+        "Valid,Frozen,ItemType,ItemsGroupCode,Mainsupplier,BarCode";
+
+    // PriceList 1 = "Precio Minorista" en SAP (convención de negocio fija, no configurable
+    // por compañía). mba3-consultas valida el PVP del Excel contra este precio específico.
+    private const int PrecioMinoristaPriceList = 1;
 
     public async Task<ItemResponse?> GetItemAsync(string itemCode, CancellationToken ct = default)
     {
@@ -903,12 +929,12 @@ internal sealed class SapGateway : ISapGateway
             try
             {
                 json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                    $"Items('{encoded}')?$select={ItemSelectFields},U_IXX_PACK", null, ct);
+                    $"Items('{encoded}')?$select={ItemSelectFields},U_IXX_PACK,U_MARCA", null, ct);
             }
             catch (SapException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
             {
-                // Company DBs without the U_IXX_PACK UDF reject the $select; retry without it
-                _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK for Item '{ItemCode}'. Retrying without the UDF.", itemCode);
+                // Company DBs without the U_IXX_PACK/U_MARCA UDFs reject the $select; retry without them
+                _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK/U_MARCA for Item '{ItemCode}'. Retrying without the UDFs.", itemCode);
                 json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
                     $"Items('{encoded}')?$select={ItemSelectFields}", null, ct);
             }
@@ -920,9 +946,10 @@ internal sealed class SapGateway : ISapGateway
         }
 
         var groups = await GetItemGroupsMapAsync(ct);
+        var pvp = await GetPrecioMinoristaAsync(itemCode, ct);
 
         using var doc = JsonDocument.Parse(json);
-        return ParseItem(doc.RootElement, itemCode, groups);
+        return ParseItem(doc.RootElement, itemCode, groups, pvp);
     }
 
     public async Task<IReadOnlyList<ItemResponse>> GetItemsByCodesAsync(
@@ -941,11 +968,11 @@ internal sealed class SapGateway : ISapGateway
         try
         {
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items?$filter={filter}&$select={ItemSelectFields},U_IXX_PACK,ItemWarehouseInfoCollection", null, ct);
+                $"Items?$filter={filter}&$select={ItemSelectFields},U_IXX_PACK,U_MARCA,ItemWarehouseInfoCollection", null, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
         {
-            _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK for items batch. Retrying without the UDF.");
+            _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK/U_MARCA for items batch. Retrying without the UDFs.");
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
                 $"Items?$filter={filter}&$select={ItemSelectFields},ItemWarehouseInfoCollection", null, ct);
         }
@@ -958,19 +985,59 @@ internal sealed class SapGateway : ISapGateway
             return [];
         }
 
-        var items = new List<ItemResponse>();
+        var codes = new List<string>();
+        var elements = new List<JsonElement>();
         foreach (var element in arr.EnumerateArray())
         {
             if (element.TryGetProperty(ItemCodeProperty, out var ic) && ic.ValueKind == JsonValueKind.String)
             {
-                items.Add(ParseItem(element, ic.GetString()!, groups));
+                elements.Add(element);
+                codes.Add(ic.GetString()!);
             }
+        }
+
+        // ItemPrices no es una navegación expandible en este SAP (SL la rechaza con
+        // -1000 "Cannot expand invalid navigation property") — solo es accesible como
+        // sub-recurso directo por ítem (Items('CODE')/ItemPrices), sin soporte de
+        // $filter, así que no hay forma de traer el precio de varios ítems en una sola
+        // llamada. Se resuelve con una llamada concurrente por ítem; SapThrottle (el
+        // mismo semáforo que ya limita toda llamada a SAP vía ExecuteWithRetryOn401Async)
+        // acota la concurrencia real a MaxConcurrentSapCalls, sin lógica nueva aquí.
+        var precios = await Task.WhenAll(codes.Select(code => GetPrecioMinoristaAsync(code, ct)));
+
+        var items = new List<ItemResponse>(elements.Count);
+        for (var i = 0; i < elements.Count; i++)
+        {
+            items.Add(ParseItem(elements[i], codes[i], groups, precios[i]));
         }
         return items;
     }
 
+    // Precio Minorista (PriceList 1) vía el sub-recurso Items('CODE')/ItemPrices.
+    // null si el ítem no existe, no tiene esa lista de precio configurada, o la
+    // llamada falla — nunca tumba la resolución del ítem por un dato opcional.
+    private async Task<decimal?> GetPrecioMinoristaAsync(string itemCode, CancellationToken ct)
+    {
+        try
+        {
+            var encoded = Uri.EscapeDataString(itemCode);
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, $"Items('{encoded}')/ItemPrices", null, ct);
+            using var doc = JsonDocument.Parse(json);
+            return ExtractPrecioMinorista(doc.RootElement);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is SapException or JsonException)
+        {
+            _logger.LogWarning(ex, "No se pudo obtener el Precio Minorista de '{ItemCode}'; se omite (pvp=null).", itemCode); // NOSONAR
+            return null;
+        }
+    }
+
     private static ItemResponse ParseItem(
-        JsonElement root, string fallbackItemCode, IReadOnlyDictionary<int, string> groups)
+        JsonElement root, string fallbackItemCode, IReadOnlyDictionary<int, string> groups, decimal? pvp)
     {
         string? StrOpt(string field) =>
             root.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
@@ -1005,8 +1072,45 @@ internal sealed class SapGateway : ISapGateway
             groupCode,
             groupCode is int g && groups.TryGetValue(g, out var groupName) ? groupName : null,
             StrOptNormalized("Mainsupplier"),
+            pvp,
+            StrOptNormalized("BarCode"),
+            StrOptNormalized("U_MARCA"),
             warehouses
         );
+    }
+
+    // Busca en la colección ItemPrices (respuesta del sub-recurso Items('CODE')/ItemPrices,
+    // ver GetPrecioMinoristaAsync) la entrada de la lista de precio "Precio Minorista"
+    // (PriceList 1) y devuelve su Price. null si el ítem no tiene esa lista de precio
+    // configurada, o si ItemPrices no vino en la respuesta.
+    private static decimal? ExtractPrecioMinorista(JsonElement root)
+    {
+        if (!root.TryGetProperty("ItemPrices", out var prices) || prices.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        foreach (var entry in prices.EnumerateArray())
+        {
+            if (entry.TryGetProperty("PriceList", out var pl) &&
+                pl.ValueKind == JsonValueKind.Number &&
+                pl.TryGetInt32(out var priceList) &&
+                priceList == PrecioMinoristaPriceList &&
+                entry.TryGetProperty("Price", out var price) &&
+                price.ValueKind == JsonValueKind.Number &&
+                price.TryGetDecimal(out var priceValue))
+            {
+                return priceValue;
+            }
+        }
+        return null;
+    }
+
+    public async Task PrewarmItemGroupsAsync(CancellationToken ct = default)
+    {
+        // GetItemGroupsMapAsync never throws (it swallows load failures and leaves the cache
+        // cold on error), so this is safe to fire at startup without guarding.
+        var groups = await GetItemGroupsMapAsync(ct);
+        _logger.LogInformation("ItemGroups cache pre-warmed with {Count} group(s)", groups.Count);
     }
 
     private async Task<IReadOnlyDictionary<int, string>> GetItemGroupsMapAsync(CancellationToken ct)
