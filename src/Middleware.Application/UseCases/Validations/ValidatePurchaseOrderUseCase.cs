@@ -121,8 +121,8 @@ public sealed class ValidatePurchaseOrderUseCase : IUseCase<ValidatePurchaseOrde
     private static ItemValidationResult MapItem(
         string itemCode,
         string warehouseCode,
-        IReadOnlyDictionary<string, SapItemValidationData> itemData,
-        IReadOnlyDictionary<string, (string Type, string? Message)> itemErrors)
+        Dictionary<string, SapItemValidationData> itemData,
+        Dictionary<string, (string Type, string? Message)> itemErrors)
     {
         if (itemErrors.TryGetValue(itemCode, out var error))
         {
