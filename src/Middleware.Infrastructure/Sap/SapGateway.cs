@@ -1461,27 +1461,30 @@ internal sealed class SapGateway : ISapGateway
         return priceLists;
     }
 
-    public Task<bool> HasPurchaseOrderLineForItemAsync(string itemCode, CancellationToken ct = default) =>
-        HasDocumentLineForItemAsync("PurchaseOrders", DocumentLinesProperty, itemCode, ct);
-
-    public Task<bool> HasInventoryGenEntryLineForItemAsync(string itemCode, CancellationToken ct = default) =>
-        HasDocumentLineForItemAsync("InventoryGenEntries", DocumentLinesProperty, itemCode, ct);
-
-    public Task<bool> HasInventoryTransferRequestLineForItemAsync(string itemCode, CancellationToken ct = default) =>
-        // Unlike PurchaseOrders/InventoryGenEntries, InventoryTransferRequests' line collection is
-        // called StockTransferLines (see GetInventoryTransferRequestsByCommentAsync's $select above).
-        HasDocumentLineForItemAsync("InventoryTransferRequests", "StockTransferLines", itemCode, ct);
-
-    private async Task<bool> HasDocumentLineForItemAsync(
-        string entity, string linesProperty, string itemCode, CancellationToken ct)
+    public async Task<bool> HasItemMovementsAsync(string itemCode, CancellationToken ct = default)
     {
-        var escaped = itemCode.Replace("'", "''");
-        var resource = $"{entity}?$filter={linesProperty}/ItemCode eq '{escaped}'&$select=DocEntry&$top=1";
+        var resource = $"Items('{Uri.EscapeDataString(itemCode)}')?$select=" +
+            "ItemCode,QuantityOnStock,QuantityOrderedFromVendors,QuantityOrderedByCustomers";
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+        string json;
+        try
+        {
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogInformation(
+                "SAP Item '{ItemCode}' not found while checking movements; returning false",
+                itemCode); // NOSONAR
+            return false;
+        }
 
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.TryGetProperty(ValueProperty, out var arr) && arr.GetArrayLength() > 0;
+        var item = JsonSerializer.Deserialize<SapItemMovementBalances>(json, JsonOptions)
+            ?? throw new SapResponseException("SAP returned an empty Item payload while checking movements");
+
+        return (item.QuantityOnStock ?? 0m) > 0m ||
+               (item.QuantityOrderedFromVendors ?? 0m) > 0m ||
+               (item.QuantityOrderedByCustomers ?? 0m) > 0m;
     }
 
     private static List<WarehouseResponse> ParseWarehouses(JsonElement arr)
@@ -1547,3 +1550,9 @@ internal sealed class SapGateway : ISapGateway
         return new DocumentCreatedResult(docEntry, docNum);
     }
 }
+
+file sealed record SapItemMovementBalances(
+    string? ItemCode,
+    decimal? QuantityOnStock,
+    decimal? QuantityOrderedFromVendors,
+    decimal? QuantityOrderedByCustomers);
