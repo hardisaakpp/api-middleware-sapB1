@@ -9,6 +9,21 @@
 > **Cualquier cambio de nombre de campo, formato o semántica en lo listado abajo rompe
 > mba3-consultas y debe coordinarse antes de desplegar.** Los campos y ejemplos fueron
 > verificados en vivo contra SAP real (TEST_MABEL) el 2026-07-14, no solo revisados en código.
+>
+> **Nota (2026-07-31):** mba3-consultas todavía no salió a producción, sigue en pruebas —
+> por eso el endpoint #9 se pudo romper sin coordinar con esa app. Antes de modificar
+> cualquier contrato de este middleware, confirmar con el equipo dueño del módulo que lo
+> consume (o revisar el módulo) en vez de asumir que sigue siendo mba3-consultas. Otros
+> endpoints en producción de este middleware, fuera de este documento: `Liquidaciones`
+> (módulo Caja Chica), `StockTransfer` based-on-document/direct/with-bins (módulo
+> Recepción/Bodegas).
+>
+> **Nota (2026-08-31, merge feature/middleware-odc-excel ↔ test):** el endpoint #9 volvió a
+> tener 2 consumidores simultáneos: mba3-consultas (vía `SAP_USE_MIDDLEWARE`, aún no en
+> producción) y reposición de mercadería. Se combinó el contrato de ambos (ver detalle en
+> el endpoint #9) en vez de que uno pisara al otro. Combinado localmente contra fixtures;
+> **pendiente de verificar en vivo** contra SAP real, igual que cualquier cambio de
+> contrato nuevo en este documento.
 
 ## Endpoints consumidos y campos leídos
 
@@ -111,6 +126,10 @@ silenciosos**: fallo de Service Layer a mitad del batch tumba el request complet
 5xx (`503` circuito/throttle, `504` timeout, `502` error de SL) — el cliente hace
 fallback a OPENQUERY ante esos códigos, no ante un `notFound`.
 
+> ℹ️ Cada elemento también puede traer `warehouses` (desglose de `inStock`/`committed`/
+> `locked`/`ordered` por bodega) — mba3-consultas no lo lee hoy; lo agregó api-articulo-
+> maestro para su verificación de movimientos por ítem.
+
 ### 8. `POST /api/v1/purchase-orders`
 
 Body camelCase: `{"cardCode", "docDate", "comments", "u_LOTE", "lines": [...]}`. Éxito
@@ -118,8 +137,27 @@ Body camelCase: `{"cardCode", "docDate", "comments", "u_LOTE", "lines": [...]}`.
 
 ### 9. `POST /api/v1/stock-transfers/requests`
 
-Body: `{"fromWarehouse", "toWarehouse", "docDate", "comments", "lines": [{"itemCode",
-"quantity", "projectCode"}]}`. Éxito: `docEntry`, `docNum`.
+> ⚠️ **2 consumidores simultáneos.** El principal hoy es el módulo de **reposición de
+> mercadería** (contrato desde 2026-07-31: `u_ORIGEN`/`series` obligatorios,
+> `stockTransferLines` con `warehouseCode` por línea). mba3-consultas también le pega a
+> este mismo endpoint vía `SAP_USE_MIDDLEWARE` (aún no en producción — `srv-mabuiosapi`
+> sigue con el cliente directo a SAP), mandando `lines` con `uOdc`/`projectCode`
+> opcionales y **sin `u_ORIGEN`**. Coordinar con ambos equipos antes de volver a tocar
+> este contrato.
+
+Body combinado: `{"fromWarehouse", "toWarehouse", "docDate", "comments", "lines":
+[{"itemCode", "quantity", "projectCode", "warehouseCode"}], "uOdc", "series", "u_ORIGEN"}`.
+Éxito: `docEntry`, `docNum`.
+
+- `series` y `u_ORIGEN` son **requeridos** (400 si faltan) — es lo que necesita
+  reposición de mercadería. Si mba3-consultas llega a ejercitar este endpoint con
+  `SAP_USE_MIDDLEWARE=true` tal como está hoy (sin mandar `u_ORIGEN`), va a recibir 400 —
+  pendiente actualizar ese cliente antes de activar la bandera contra este middleware.
+- `uOdc` (nº de OC de origen, UDF `U_ODC`), `projectCode` (por línea) y `warehouseCode`
+  (por línea, destino si difiere del `toWarehouse` del encabezado) son opcionales; se
+  omiten del payload a SAP si vienen null.
+- `docDate` sigue viniendo del cliente (a diferencia de las variantes `based-on-document`/
+  `direct`/`with-bins`, donde el middleware la completa con la fecha actual).
 
 ### 10. `GET /api/v1/inventory-transfer-requests?commentsContain={texto}`
 
@@ -197,3 +235,10 @@ documentada (reportes con joins que Service Layer no resuelve bien).
     consulta de precio falla a propósito (para confirmar que no tumba el resto
     del batch). 39 tests de integración + 29 unitarios, todos contra este
     cambio.
+- 2026-08-31: merge de `feature/middleware-odc-excel` con `test` — se combinó el
+  contrato del endpoint #9 (ver nota arriba) y se sumaron a esta rama las
+  funcionalidades que `test` había agregado en paralelo (CRUD de Items, Price Lists,
+  variantes de Stock Transfer con bins/directo/basado-en-documento, `warehouses` en
+  batch de ítems). Combinado localmente (build + 96 tests entre unitarios e
+  integración, todos contra fixtures); **pendiente de verificar en vivo** contra SAP
+  real, en particular el contrato combinado del endpoint #9.

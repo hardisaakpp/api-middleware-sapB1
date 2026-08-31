@@ -1,6 +1,7 @@
 using Middleware.Api;
 using Middleware.Api.HealthChecks;
 using Middleware.Api.Logging;
+using Middleware.Api.Middleware;
 using Middleware.Application;
 using Middleware.Application.UseCases.Deposits;
 using Middleware.Application.UseCases.Validations;
@@ -14,6 +15,8 @@ Log.Logger = new LoggerConfiguration()
 
 try
 {
+    DotNetEnv.Env.TraversePath().Load();
+
     var builder = WebApplication.CreateBuilder(args);
 
     // Local secrets layer, on top of appsettings.{Environment}.json — see docs/configuration.md

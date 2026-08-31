@@ -23,27 +23,53 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         _jobCoordinator = jobCoordinator;
     }
 
-    [HttpPost]
+    [HttpPost("based-on-document")]
     [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> Create(
-        [FromBody] CreateStockTransferRequest request,
+    public async Task<IActionResult> CreateBasedOnDocument(
+        [FromBody] CreateStockTransferBasedOnDocumentRequest request,
         CancellationToken cancellationToken)
     {
         var payloadJson = JsonSerializer.Serialize(request);
 
         var outcome = await _jobCoordinator.ExecuteAsync(
-            "CreateStockTransfer",
-            "POST /api/v1/stock-transfers",
+            "CreateStockTransferBasedOnDocument",
+            "POST /api/v1/stock-transfers/based-on-document",
             payloadJson,
-            (sp, ct) => sp.GetRequiredService<CreateStockTransferUseCase>().ExecuteAsync(request, ct),
+            (sp, ct) => sp.GetRequiredService<CreateStockTransferBasedOnDocumentUseCase>().ExecuteAsync(request, ct),
             (int)HttpStatusCode.Created,
             cancellationToken);
 
         return outcome switch
         {
-            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(Create), c.Response),
+            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(CreateBasedOnDocument), c.Response),
+            JobQueued<StockTransferResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    [HttpPost("direct")]
+    [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> CreateDirect(
+        [FromBody] CreateStockTransferDirectRequest request,
+        CancellationToken cancellationToken)
+    {
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "CreateStockTransferDirect",
+            "POST /api/v1/stock-transfers/direct",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<CreateStockTransferDirectUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.Created,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(CreateDirect), c.Response),
             JobQueued<StockTransferResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
@@ -100,4 +126,37 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
+
+    [HttpGet("by-correlation/{uSapId}")]
+    [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetByCorrelationId(
+    string uSapId,
+    [FromServices] GetStockTransferByCorrelationIdUseCase useCase,
+    CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(uSapId))
+        {
+            return BadRequest(new ProblemDetails { Title = "Invalid request", Detail = "uSapId is required." });
+        }
+
+        var result = await useCase.ExecuteAsync(uSapId, cancellationToken);
+
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    [HttpGet("{docEntry:int}/status")]
+    [ProducesResponseType(typeof(StockTransferStatusResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetStatus(
+    int docEntry,
+    [FromServices] GetStockTransferStatusUseCase useCase,
+    CancellationToken cancellationToken)
+    {
+        var result = await useCase.ExecuteAsync(docEntry, cancellationToken);
+        return result is null ? NotFound() : Ok(result);
+    }
+
+
 }

@@ -84,7 +84,7 @@ public sealed class MiControllerTests : IClassFixture<WebApplicationFactory<Prog
     public async Task Post_Returns201()
     {
         var client = _factory.CreateClient();
-        var response = await client.PostAsJsonAsync("/api/v1/stock-transfers", new { ... });
+        var response = await client.PostAsJsonAsync("/api/v1/stock-transfers/direct", new { ... });
         response.StatusCode.Should().Be(HttpStatusCode.Created);
     }
 }

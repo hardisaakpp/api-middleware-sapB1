@@ -13,4 +13,7 @@ public sealed class SapSettings
     public int ThrottleWaitSeconds { get; init; } = 8;
     public int ItemGroupsCacheMinutes { get; init; } = 360;
     public string? TestCompanyDb { get; init; }
+
+    /// <summary>Password for UserName against TestCompanyDb. SAP B1 users are scoped per CompanyDB, so this can differ from Password.</summary>
+    public string? TestPassword { get; init; }
 }

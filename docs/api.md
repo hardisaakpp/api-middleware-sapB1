@@ -201,23 +201,39 @@ Actualiza el campo de usuario `U_STATUS` de una solicitud de transferencia de in
 
 ## Transferencias de Stock (Stock Transfers)
 
-### POST /stock-transfers
+`POST /stock-transfers/based-on-document`, `POST /stock-transfers/direct` y
+`POST /stock-transfers/with-bins` inician sesión en SAP contra `Sap:TestCompanyDb` /
+`Sap:TestPassword` (nunca `Sap:CompanyDb`) — cuál base real es esa (test o producción) lo decide
+la variable de entorno del deploy, no el código.
 
-Crea una transferencia de stock entre almacenes en SAP (`StockTransfers`).
+### POST /stock-transfers/based-on-document
+
+Crea una transferencia de stock (`StockTransfers`) referenciando un documento base por línea
+(`baseType`/`baseEntry`/`baseLine`, ej. una solicitud de transferencia u orden de compra ya
+existente en SAP).
 
 **Cuerpo del request**
 
 ```json
 {
+  "docObjectCode": "67",
+  "cardCode": null,
+  "docDate": "2024-06-15",
+  "taxDate": null,
+  "comments": "Reposición mensual",
   "fromWarehouse": "WH01",
   "toWarehouse": "WH02",
-  "docDate": "2024-06-15",
-  "comments": "Reposición mensual",
-  "lines": [
+  "u_ORIGEN": null,
+  "series": null,
+  "priceList": null,
+  "stockTransferLines": [
     {
+      "baseType": 1250000001,
+      "baseEntry": 123,
+      "baseLine": 0,
       "itemCode": "ITEM-001",
       "quantity": 5.0,
-      "projectCode": "PROJ-A"
+      "warehouseCode": "WH02"
     }
   ]
 }
@@ -225,14 +241,23 @@ Crea una transferencia de stock entre almacenes en SAP (`StockTransfers`).
 
 | Campo | Tipo | Requerido | Validación |
 |---|---|---|---|
+| `docObjectCode` | string | — | Opcional |
+| `cardCode` | string | — | Opcional |
+| `docDate` | string | ✓ | NotEmpty, formato `yyyy-MM-dd` |
+| `taxDate` | string | — | Opcional |
+| `comments` | string | — | Opcional |
 | `fromWarehouse` | string | ✓ | NotEmpty, max 8 chars, distinto de `toWarehouse` |
 | `toWarehouse` | string | ✓ | NotEmpty, max 8 chars |
-| `docDate` | `DateOnly` | ✓ | Formato `yyyy-MM-dd` |
-| `comments` | string | — | Opcional |
-| `lines` | array | ✓ | Al menos un elemento |
-| `lines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
-| `lines[].quantity` | decimal | ✓ | > 0 |
-| `lines[].projectCode` | string | — | Opcional |
+| `u_ORIGEN` | string | — | Opcional |
+| `series` | int | — | Opcional |
+| `priceList` | int | — | Opcional (default SAP: -2, "Último precio determinado") |
+| `stockTransferLines` | array | ✓ | Al menos un elemento |
+| `stockTransferLines[].baseType` | int | — | Opcional |
+| `stockTransferLines[].baseEntry` | int | — | Opcional |
+| `stockTransferLines[].baseLine` | int | — | Opcional |
+| `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
+| `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
+| `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
 
 **Respuesta exitosa — 201 Created**
 
@@ -245,30 +270,195 @@ Crea una transferencia de stock entre almacenes en SAP (`StockTransfers`).
 
 ---
 
-### POST /stock-transfers/with-bins
+### POST /stock-transfers/direct
 
-Crea una transferencia de stock con asignación de bins (ubicaciones de almacén).
+Crea una transferencia de stock (`StockTransfers`) directa entre almacenes, sin referenciar
+ningún documento base. Mismo cuerpo que `/based-on-document` pero sin `baseType`/`baseEntry`/
+`baseLine` por línea.
 
 **Cuerpo del request**
 
 ```json
 {
+  "docObjectCode": null,
+  "cardCode": null,
+  "docDate": "2024-06-15",
+  "taxDate": null,
+  "comments": "Reposición mensual",
   "fromWarehouse": "WH01",
   "toWarehouse": "WH02",
-  "docDate": "2024-06-15",
-  "comments": null,
-  "lines": [
+  "u_ORIGEN": null,
+  "series": null,
+  "priceList": null,
+  "stockTransferLines": [
     {
       "itemCode": "ITEM-001",
       "quantity": 5.0,
-      "fromBinCode": 10,
-      "toBinCode": 25
+      "warehouseCode": "WH02"
+    }
+  ],
+  "u_sap_id": null,
+  "u_GUIA_LAAR": null
+}
+```
+
+Mismas validaciones que `/based-on-document` (menos las de `baseType`/`baseEntry`/`baseLine`,
+que no existen aquí).
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `u_sap_id` | string | — | Opcional. Clave de correlación del sistema consumidor, usada para idempotencia (ver abajo) |
+| `u_GUIA_LAAR` | string | — | Opcional. UDF de guía de transporte del consumidor |
+
+**Idempotencia con `u_sap_id`**: si se envía `u_sap_id` y el `POST` a SAP agota el timeout
+(`TimeoutRejectedException`), el middleware consulta `StockTransfers` filtrando por ese
+`u_sap_id` antes de relanzar el error — si SAP sí llegó a crear el documento a pesar del
+timeout del cliente, se recupera y se devuelve ese `DocEntry`/`DocNum` en lugar de fallar.
+Este chequeo **solo se dispara ante timeout**, no en cada request — si SAP responde a tiempo
+(el caso normal), no hay verificación adicional ni riesgo de que un reenvío con el mismo
+`u_sap_id` en condiciones normales sea detectado como duplicado: cada `POST` exitoso crea un
+documento nuevo. Para saber si una transferencia con un `u_sap_id` dado ya existe antes de
+reenviarla, usar `GET /stock-transfers/by-correlation/{uSapId}` (ver abajo).
+
+**Respuesta exitosa — 201 Created**
+
+```json
+{
+  "docEntry": 45,
+  "docNum": 1004
+}
+```
+
+---
+
+### GET /stock-transfers/by-correlation/{uSapId}
+
+Busca una transferencia de stock (`StockTransfers`) por su UDF de correlación `u_sap_id`.
+Pensado para que un sistema consumidor verifique si una transferencia ya fue creada en SAP
+antes de reenviarla (por ejemplo, tras un timeout o reintento de su propio lado). Es una
+lectura síncrona y directa contra SAP — no pasa por el sistema de jobs/cola.
+
+**Respuesta exitosa — 200 OK**
+
+```json
+{
+  "docEntry": 45,
+  "docNum": 1004
+}
+```
+
+| Código | Motivo |
+|---|---|
+| `400 Bad Request` | `uSapId` vacío |
+| `404 Not Found` | No existe ningún `StockTransfer` con ese `u_sap_id` en SAP |
+| `502 Bad Gateway` | SAP devolvió un error inesperado |
+
+---
+
+### POST /stock-transfers/with-bins
+
+Crea una transferencia de stock (`StockTransfers`) con asignación de ubicaciones (bins) por
+línea. Cubre los 4 combos posibles de bodega origen/destino con o sin ubicaciones habilitadas:
+el array `stockTransferLinesBinAllocations` es opcional y por línea, así que si un lado no
+maneja bins simplemente no se le manda ninguna entrada (puede traer solo entradas de un lado,
+de ambos, o ninguna).
+
+**Cuerpo del request**
+
+```json
+{
+  "docObjectCode": null,
+  "cardCode": null,
+  "docDate": "2024-06-15",
+  "taxDate": null,
+  "comments": "Reposición mensual",
+  "fromWarehouse": "WH01",
+  "toWarehouse": "WH02",
+  "u_ORIGEN": null,
+  "series": null,
+  "priceList": null,
+  "stockTransferLines": [
+    {
+      "baseType": null,
+      "baseEntry": null,
+      "baseLine": null,
+      "itemCode": "ITEM-001",
+      "quantity": 10.0,
+      "warehouseCode": "WH02",
+      "stockTransferLinesBinAllocations": [
+        { "binAbsEntry": 5, "quantity": 10.0, "binActionType": 2 },
+        { "binAbsEntry": 9, "quantity": 10.0, "binActionType": 1 }
+      ]
     }
   ]
 }
 ```
 
-Los campos `fromBinCode` y `toBinCode` son los `BinAbsEntry` de SAP (entero, no el código visual).
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `docObjectCode`, `cardCode`, `taxDate`, `u_ORIGEN`, `series`, `priceList` | — | — | Opcionales, igual que en `/based-on-document` |
+| `docDate` | string | ✓ | NotEmpty, formato `yyyy-MM-dd` |
+| `fromWarehouse` / `toWarehouse` | string | ✓ | NotEmpty, max 8 chars, distintos entre sí |
+| `stockTransferLines` | array | ✓ | Al menos un elemento |
+| `stockTransferLines[].baseType/baseEntry/baseLine` | int | — | Opcionales (referencia a documento base) |
+| `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
+| `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
+| `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+| `stockTransferLines[].stockTransferLinesBinAllocations` | array | — | Opcional; omitir si esa bodega no tiene bins |
+| `...binAllocations[].binAbsEntry` | int | ✓ (si se manda el array) | > 0 |
+| `...binAllocations[].quantity` | decimal | ✓ (si se manda el array) | > 0 |
+| `...binAllocations[].binActionType` | int | ✓ (si se manda el array) | `1` = Entrada (bin destino) o `2` = Salida (bin origen) — se mapea a `batToWarehouse`/`batFromWarehouse` de SAP |
+
+**Respuesta exitosa — 201 Created**
+
+```json
+{
+  "docEntry": 46,
+  "docNum": 1005
+}
+```
+
+---
+
+### POST /stock-transfers/requests
+
+Crea una solicitud de transferencia de stock (`InventoryTransferRequests`) sin moverla. Inicia
+sesión contra `Sap:CompanyDb` (producción) — **consumido en vivo por el módulo de reposición de
+mercadería, no cambiar su contrato sin coordinar con ese módulo** (ver `docs/CONTRATO_MIDDLEWARE.md`).
+
+**Cuerpo del request**
+
+```json
+{
+  "fromWarehouse": "OUT-CD",
+  "toWarehouse": "TOUT-BMB",
+  "u_ORIGEN": "C",
+  "comments": "CUIDADO ORAL",
+  "series": 10133,
+  "stockTransferLines": [
+    {
+      "itemCode": "SKBLZ0147",
+      "quantity": 24.0,
+      "warehouseCode": "TOUT-BMB"
+    }
+  ]
+}
+```
+
+`docDate` ya no se recibe del cliente — el middleware lo completa internamente con la fecha
+actual al armar el payload hacia SAP.
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `fromWarehouse` | string | ✓ | NotEmpty, max 8 chars, distinto de `toWarehouse` |
+| `toWarehouse` | string | ✓ | NotEmpty, max 8 chars |
+| `u_ORIGEN` | string | ✓ | NotEmpty |
+| `comments` | string | — | Opcional |
+| `series` | int | ✓ | > 0 |
+| `stockTransferLines` | array | ✓ | Al menos un elemento |
+| `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
+| `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
+| `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
 
 **Respuesta exitosa — 201 Created**
 
@@ -278,13 +468,6 @@ Los campos `fromBinCode` y `toBinCode` son los `BinAbsEntry` de SAP (entero, no 
   "docNum": 1002
 }
 ```
-
----
-
-### POST /stock-transfers/requests
-
-Crea una solicitud de transferencia de stock (`InventoryTransferRequests`) sin moverla.  
-Mismo cuerpo y respuesta que `POST /stock-transfers`.
 
 ---
 
@@ -522,6 +705,58 @@ Stock del artículo en una bodega.
   como código legible. `null` si SL no la tiene poblada.
 - `locked` es el flag de bloqueo por bodega (`Locked` en `ItemWarehouseInfoCollection`).
 - `404` solo si el ítem no existe; bodega sin registro para el ítem devuelve `inStock`/`isCommitted`/`locked` en `0`/`false` (pero `uomCode` sigue resolviendo el valor a nivel ítem).
+
+---
+
+### POST /items/stock/batch
+
+Stock de hasta 100 artículos en **una sola bodega fija**, en una sola llamada (reemplaza N
+llamadas a `GET /items/{itemCode}/stock/{warehouseCode}` con el mismo `warehouseCode`). Solo
+lectura, síncrono (no pasa por la cola de jobs).
+
+**Cuerpo del request**
+
+```json
+{
+  "warehouseCode": "RL-CD",
+  "itemCodes": ["R215.810.NO", "780-2404174", "NO-EXISTE-123"]
+}
+```
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `warehouseCode` | string | ✓ | NotEmpty, max 8 chars — aplica a todos los ítems de la llamada |
+| `itemCodes` | array | ✓ | 0 a 100 códigos, cada uno NotEmpty max 50 chars. Repetidos se deduplican. `[]` devuelve 200 con listas vacías |
+
+**Respuesta exitosa — 200 OK**
+
+```json
+{
+  "items": [
+    { "itemCode": "R215.810.NO", "warehouseCode": "RL-CD", "inStock": 0.0, "isCommitted": 292.0, "uomCode": "UNIDAD", "locked": false }
+  ],
+  "notFound": ["NO-EXISTE-123", "780-2404174"]
+}
+```
+
+- Cada elemento de `items` es el mismo objeto que devuelve `GET /items/{itemCode}/stock/{warehouseCode}`
+  (mismos campos, misma fuente/cálculo de `inStock`/`isCommitted`).
+- A diferencia del endpoint individual, aquí **no hay distinción entre "ítem no existe" y
+  "bodega sin registro para el ítem"** — ambos casos caen en `notFound`, sin ceros falsos.
+  El **orden de `items` no está garantizado**; mapear por `itemCode`.
+- **Sin resultados parciales silenciosos**: un fallo de Service Layer a mitad del batch tumba
+  el request completo con problem-detail 5xx (mismo comportamiento que `POST /items/batch`).
+- Internamente reutiliza la misma consulta que `POST /validations/purchase-order` (trae
+  `ItemWarehouseInfoCollection` completa por ítem y filtra en memoria por `warehouseCode`,
+  igual que hace el endpoint individual de stock) — no hay `$filter` de SAP anidado en la
+  colección de bodegas, es una limitación de Service Layer, no del middleware.
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | Payload inválido, `warehouseCode` vacío, o más de 100 códigos |
+| `502 / 503 / 504` | Fallo de Service Layer durante el batch — sin parciales |
 
 ---
 
