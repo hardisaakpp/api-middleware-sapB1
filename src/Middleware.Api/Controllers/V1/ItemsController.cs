@@ -306,22 +306,27 @@ public sealed class ItemsController : ControllerBase // NOSONAR
     }
 
     /// <summary>
-    /// Combined existence check across PurchaseOrders/InventoryGenEntries/InventoryTransferRequests —
-    /// used by callers to decide if an item is still editable. Synchronous by design (no job queue):
-    /// this is a fast yes/no the caller needs immediately, unlike this API's write endpoints where
-    /// queueing a slow SAP write behind a 202 makes sense. A SAP outage surfaces as-is through
-    /// GlobalExceptionMiddleware (503/504), consistent with the other synchronous read endpoints
-    /// (Warehouses, Validations).
+    /// Atomic item-master balance check used by callers to decide if an item is still editable.
+    /// Synchronous by design: callers need the answer before performing an upsert. SAP failures are
+    /// passed through with their original status; transport failures are handled by the global pipeline.
     /// </summary>
     [HttpGet("{itemCode}/has-movements")]
     [ProducesResponseType(typeof(HasItemMovementsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status502BadGateway)]
     public async Task<ActionResult<HasItemMovementsResponse>> GetHasMovements(
-        string itemCode,
+        [FromRoute] string itemCode,
         [FromServices] HasItemMovementsUseCase hasMovementsUseCase,
         CancellationToken cancellationToken)
     {
-        var result = await hasMovementsUseCase.ExecuteAsync(itemCode, cancellationToken);
-        return Ok(result);
+        try
+        {
+            var result = await hasMovementsUseCase.ExecuteAsync(itemCode, cancellationToken);
+            return Ok(result);
+        }
+        catch (SapException ex)
+        {
+            return SapErrorResult(ex);
+        }
     }
 
     // Preserves SAP's original status/body instead of the generic 502 GlobalExceptionMiddleware

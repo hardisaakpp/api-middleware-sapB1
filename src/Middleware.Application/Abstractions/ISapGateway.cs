@@ -67,14 +67,11 @@ public interface ISapGateway
     /// <summary>Fetches the full SAP price list catalog (id + name only).</summary>
     public Task<IReadOnlyList<PriceListResponse>> GetPriceListsAsync(CancellationToken ct = default);
 
-    /// <summary>True if at least one PurchaseOrder line references this ItemCode (existence check, $top=1).</summary>
-    public Task<bool> HasPurchaseOrderLineForItemAsync(string itemCode, CancellationToken ct = default);
-
-    /// <summary>True if at least one InventoryGenEntry (Deposit) line references this ItemCode (existence check, $top=1).</summary>
-    public Task<bool> HasInventoryGenEntryLineForItemAsync(string itemCode, CancellationToken ct = default);
-
-    /// <summary>True if at least one InventoryTransferRequest line references this ItemCode (existence check, $top=1).</summary>
-    public Task<bool> HasInventoryTransferRequestLineForItemAsync(string itemCode, CancellationToken ct = default);
+    /// <summary>
+    /// True when the item master has positive stock, vendor orders, or customer commitments.
+    /// A missing item (SAP 404) returns false.
+    /// </summary>
+    public Task<bool> HasItemMovementsAsync(string itemCode, CancellationToken ct = default);
 }
 
 public sealed record DocumentCreatedResult(int DocEntry, int DocNum);
