@@ -733,23 +733,31 @@ lectura, síncrono (no pasa por la cola de jobs).
 ```json
 {
   "items": [
-    { "itemCode": "R215.810.NO", "warehouseCode": "RL-CD", "inStock": 0.0, "isCommitted": 292.0, "uomCode": "UNIDAD", "locked": false }
+    { "itemCode": "R215.810.NO", "warehouseCode": "RL-CD", "inStock": 0.0, "isCommitted": 0.0, "uomCode": null, "locked": false }
   ],
   "notFound": ["NO-EXISTE-123", "780-2404174"]
 }
 ```
 
-- Cada elemento de `items` es el mismo objeto que devuelve `GET /items/{itemCode}/stock/{warehouseCode}`
-  (mismos campos, misma fuente/cálculo de `inStock`/`isCommitted`).
-- A diferencia del endpoint individual, aquí **no hay distinción entre "ítem no existe" y
-  "bodega sin registro para el ítem"** — ambos casos caen en `notFound`, sin ceros falsos.
+- **Fuente de datos: User Query `STOCK_BODEGA` (`sml.svc`), no el objeto `Items` de Service
+  Layer.** `Items` con `ItemWarehouseInfoCollection` no se puede filtrar por bodega en SAP
+  (confirmado: `$expand` y `$filter` con `any()` son rechazados por SAP), así que traía las
+  ~305 bodegas de cada ítem para quedarse con 1 — medido en ~845 KB / ~750 ms **por un solo
+  ítem**, y 12-24 s para un batch de 10-50. `STOCK_BODEGA` filtra por `WhsCode`+`ItemCode` en
+  origen, dentro de SAP.
+- ⚠️ **`isCommitted`, `uomCode` y `locked` ya no reflejan datos reales de SAP** — la vista
+  solo expone `OnHand`. Quedan siempre en `0`, `null` y `false` respectivamente. Antes de este
+  cambio sí traían el dato real (misma fuente que `GET /items/{itemCode}/stock/{warehouseCode}`,
+  que no se tocó y sigue usando `Items`). Un cliente que calcule `disponible = inStock -
+  isCommitted` deja de ver el stock que SAP tiene comprometido por operaciones ajenas a él.
+- Cada `itemCode` sin fila en `STOCK_BODEGA` para esa bodega (no existe, o `OnHand` no
+  aplica) cae en `notFound` — sin distinción de motivo, igual que antes.
   El **orden de `items` no está garantizado**; mapear por `itemCode`.
-- **Sin resultados parciales silenciosos**: un fallo de Service Layer a mitad del batch tumba
-  el request completo con problem-detail 5xx (mismo comportamiento que `POST /items/batch`).
-- Internamente reutiliza la misma consulta que `POST /validations/purchase-order` (trae
-  `ItemWarehouseInfoCollection` completa por ítem y filtra en memoria por `warehouseCode`,
-  igual que hace el endpoint individual de stock) — no hay `$filter` de SAP anidado en la
-  colección de bodegas, es una limitación de Service Layer, no del middleware.
+- **Sin resultados parciales silenciosos**: un fallo de Service Layer tumba el request
+  completo con problem-detail 5xx.
+- `STOCK_BODEGA` pagina de a 20 filas (`@odata.nextLink`) sin importar cuántos `itemCodes` se
+  pidan — el gateway sigue el link internamente hasta agotar las páginas, transparente para
+  el cliente.
 
 **Códigos de error**
 
