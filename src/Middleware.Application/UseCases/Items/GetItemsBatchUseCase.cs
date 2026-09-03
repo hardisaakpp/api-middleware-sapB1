@@ -33,9 +33,7 @@ public sealed class GetItemsBatchUseCase : IUseCase<GetItemsBatchRequest, ItemsB
             .ToList();
 
         if (codes.Count == 0)
-        {
             return new ItemsBatchResponse([], []);
-        }
 
         var chunks = codes.Chunk(Math.Max(1, _settings.SapChunkSize)).ToList();
 
@@ -58,9 +56,7 @@ public sealed class GetItemsBatchUseCase : IUseCase<GetItemsBatchRequest, ItemsB
                 lock (sync)
                 {
                     foreach (var item in items)
-                    {
                         found[item.ItemCode] = item;
-                    }
                 }
             }
             finally
@@ -76,13 +72,9 @@ public sealed class GetItemsBatchUseCase : IUseCase<GetItemsBatchRequest, ItemsB
         foreach (var code in codes)
         {
             if (found.TryGetValue(code, out var item))
-            {
                 items.Add(item);
-            }
             else
-            {
                 notFound.Add(code);
-            }
         }
 
         return new ItemsBatchResponse(items, notFound);

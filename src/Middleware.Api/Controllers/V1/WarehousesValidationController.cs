@@ -40,9 +40,7 @@ public sealed class WarehousesValidationController : ControllerBase
         if (!validation.IsValid)
         {
             foreach (var failure in validation.Errors)
-            {
                 ModelState.AddModelError(failure.PropertyName, failure.ErrorMessage);
-            }
             return ValidationProblem(ModelState);
         }
 

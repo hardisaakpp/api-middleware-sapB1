@@ -296,12 +296,29 @@ ningún documento base. Mismo cuerpo que `/based-on-document` pero sin `baseType
       "quantity": 5.0,
       "warehouseCode": "WH02"
     }
-  ]
+  ],
+  "u_sap_id": null,
+  "u_GUIA_LAAR": null
 }
 ```
 
 Mismas validaciones que `/based-on-document` (menos las de `baseType`/`baseEntry`/`baseLine`,
 que no existen aquí).
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `u_sap_id` | string | — | Opcional. Clave de correlación del sistema consumidor, usada para idempotencia (ver abajo) |
+| `u_GUIA_LAAR` | string | — | Opcional. UDF de guía de transporte del consumidor |
+
+**Idempotencia con `u_sap_id`**: si se envía `u_sap_id` y el `POST` a SAP agota el timeout
+(`TimeoutRejectedException`), el middleware consulta `StockTransfers` filtrando por ese
+`u_sap_id` antes de relanzar el error — si SAP sí llegó a crear el documento a pesar del
+timeout del cliente, se recupera y se devuelve ese `DocEntry`/`DocNum` en lugar de fallar.
+Este chequeo **solo se dispara ante timeout**, no en cada request — si SAP responde a tiempo
+(el caso normal), no hay verificación adicional ni riesgo de que un reenvío con el mismo
+`u_sap_id` en condiciones normales sea detectado como duplicado: cada `POST` exitoso crea un
+documento nuevo. Para saber si una transferencia con un `u_sap_id` dado ya existe antes de
+reenviarla, usar `GET /stock-transfers/by-correlation/{uSapId}` (ver abajo).
 
 **Respuesta exitosa — 201 Created**
 
@@ -311,6 +328,30 @@ que no existen aquí).
   "docNum": 1004
 }
 ```
+
+---
+
+### GET /stock-transfers/by-correlation/{uSapId}
+
+Busca una transferencia de stock (`StockTransfers`) por su UDF de correlación `u_sap_id`.
+Pensado para que un sistema consumidor verifique si una transferencia ya fue creada en SAP
+antes de reenviarla (por ejemplo, tras un timeout o reintento de su propio lado). Es una
+lectura síncrona y directa contra SAP — no pasa por el sistema de jobs/cola.
+
+**Respuesta exitosa — 200 OK**
+
+```json
+{
+  "docEntry": 45,
+  "docNum": 1004
+}
+```
+
+| Código | Motivo |
+|---|---|
+| `400 Bad Request` | `uSapId` vacío |
+| `404 Not Found` | No existe ningún `StockTransfer` con ese `u_sap_id` en SAP |
+| `502 Bad Gateway` | SAP devolvió un error inesperado |
 
 ---
 
@@ -573,7 +614,8 @@ por SKU exacto (pack, grupo y proveedor preferido).
   "packCode": "X1",
   "groupCode": 103,
   "groupName": "R-MEDIAS",
-  "preferredVendorCode": "P1790389219001"
+  "preferredVendorCode": "P1790389219001",
+  "marca": "Roland"
 }
 ```
 
@@ -584,6 +626,7 @@ por SKU exacto (pack, grupo y proveedor preferido).
 | `groupCode` | `ItemsGroupCode` | `null` si SL no lo devuelve |
 | `groupName` | `ItemGroups.GroupName` | Resuelto vía cache en memoria del mapa código→nombre (TTL `Sap:ItemGroupsCacheMinutes`, default 360). `null` si el grupo no se puede resolver; siempre coherente con `groupCode` |
 | `preferredVendorCode` | `Mainsupplier` | `null` si el ítem no tiene proveedor preferido (`""` de SL se normaliza a `null`) |
+| `marca` | `U_MARCA` (UDF) | `null` si el ítem no lo tiene. Si la base no tiene el UDF, el middleware reintenta el `$select` sin él (junto con `packCode`) y devuelve `null` |
 
 Los campos con valor `null` se omiten del JSON (política global de la API).
 
@@ -662,6 +705,66 @@ Stock del artículo en una bodega.
   como código legible. `null` si SL no la tiene poblada.
 - `locked` es el flag de bloqueo por bodega (`Locked` en `ItemWarehouseInfoCollection`).
 - `404` solo si el ítem no existe; bodega sin registro para el ítem devuelve `inStock`/`isCommitted`/`locked` en `0`/`false` (pero `uomCode` sigue resolviendo el valor a nivel ítem).
+
+---
+
+### POST /items/stock/batch
+
+Stock de hasta 100 artículos en **una sola bodega fija**, en una sola llamada (reemplaza N
+llamadas a `GET /items/{itemCode}/stock/{warehouseCode}` con el mismo `warehouseCode`). Solo
+lectura, síncrono (no pasa por la cola de jobs).
+
+**Cuerpo del request**
+
+```json
+{
+  "warehouseCode": "RL-CD",
+  "itemCodes": ["R215.810.NO", "780-2404174", "NO-EXISTE-123"]
+}
+```
+
+| Campo | Tipo | Requerido | Validación |
+|---|---|---|---|
+| `warehouseCode` | string | ✓ | NotEmpty, max 8 chars — aplica a todos los ítems de la llamada |
+| `itemCodes` | array | ✓ | 0 a 100 códigos, cada uno NotEmpty max 50 chars. Repetidos se deduplican. `[]` devuelve 200 con listas vacías |
+
+**Respuesta exitosa — 200 OK**
+
+```json
+{
+  "items": [
+    { "itemCode": "R215.810.NO", "warehouseCode": "RL-CD", "inStock": 0.0, "isCommitted": 0.0, "uomCode": null, "locked": false }
+  ],
+  "notFound": ["NO-EXISTE-123", "780-2404174"]
+}
+```
+
+- **Fuente de datos: User Query `STOCK_BODEGA` (`sml.svc`), no el objeto `Items` de Service
+  Layer.** `Items` con `ItemWarehouseInfoCollection` no se puede filtrar por bodega en SAP
+  (confirmado: `$expand` y `$filter` con `any()` son rechazados por SAP), así que traía las
+  ~305 bodegas de cada ítem para quedarse con 1 — medido en ~845 KB / ~750 ms **por un solo
+  ítem**, y 12-24 s para un batch de 10-50. `STOCK_BODEGA` filtra por `WhsCode`+`ItemCode` en
+  origen, dentro de SAP.
+- ⚠️ **`isCommitted`, `uomCode` y `locked` ya no reflejan datos reales de SAP** — la vista
+  solo expone `OnHand`. Quedan siempre en `0`, `null` y `false` respectivamente. Antes de este
+  cambio sí traían el dato real (misma fuente que `GET /items/{itemCode}/stock/{warehouseCode}`,
+  que no se tocó y sigue usando `Items`). Un cliente que calcule `disponible = inStock -
+  isCommitted` deja de ver el stock que SAP tiene comprometido por operaciones ajenas a él.
+- Cada `itemCode` sin fila en `STOCK_BODEGA` para esa bodega (no existe, o `OnHand` no
+  aplica) cae en `notFound` — sin distinción de motivo, igual que antes.
+  El **orden de `items` no está garantizado**; mapear por `itemCode`.
+- **Sin resultados parciales silenciosos**: un fallo de Service Layer tumba el request
+  completo con problem-detail 5xx.
+- `STOCK_BODEGA` pagina de a 20 filas (`@odata.nextLink`) sin importar cuántos `itemCodes` se
+  pidan — el gateway sigue el link internamente hasta agotar las páginas, transparente para
+  el cliente.
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | Payload inválido, `warehouseCode` vacío, o más de 100 códigos |
+| `502 / 503 / 504` | Fallo de Service Layer durante el batch — sin parciales |
 
 ---
 

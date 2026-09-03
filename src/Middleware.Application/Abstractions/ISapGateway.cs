@@ -10,10 +10,14 @@ public interface ISapGateway
 
     /// <summary>Plain warehouse-to-warehouse transfer, no base-document reference. Logs in against Sap:TestCompanyDb / Sap:TestPassword.</summary>
     public Task<DocumentCreatedResult> CreateStockTransferDirectAsync(CreateStockTransferDirectRequest request, CancellationToken ct = default);
+    /// <summary>Looks up a StockTransfer by its U_sap_id correlation UDF. Returns null if no match exists in SAP.</summary>
+    public Task<DocumentCreatedResult?> GetStockTransferByCorrelationIdAsync(string uSapId, CancellationToken ct = default);
+
 
     /// <summary>Transfer with per-line bin allocations (0, 1 or both sides, depending on which warehouse has bins enabled). Logs in against Sap:TestCompanyDb / Sap:TestPassword.</summary>
     public Task<DocumentCreatedResult> CreateStockTransferWithBinsAsync(CreateStockTransferWithBinsRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateStockTransferRequestAsync(CreateStockTransferRequest request, CancellationToken ct = default);
+    public Task<StockTransferStatusResponse?> GetStockTransferStatusAsync(int docEntry, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateDepositAsync(CreateDepositRequest request, string companyDb, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateGoodsReceiptAsync(CreateGoodsReceiptRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateLiquidacionAsync(CreateLiquidacionRequest request, CancellationToken ct = default);
@@ -23,6 +27,15 @@ public interface ISapGateway
     public Task UpdatePurchaseOrderAsync(int docEntry, UpdatePurchaseOrderRequest request, CancellationToken ct = default);
     public Task<ItemResponse?> GetItemAsync(string itemCode, CancellationToken ct = default);
 
+    /// <summary>Creates a SAP Item master record. Throws SapException with SAP's original status/body on failure (e.g. 400/-2035 duplicate ItemCode).</summary>
+    public Task CreateItemAsync(CreateItemRequest request, CancellationToken ct = default);
+
+    /// <summary>Partially updates a SAP Item master record — only the properties present in <paramref name="request"/> are sent.</summary>
+    public Task UpdateItemAsync(string itemCode, UpdateItemRequest request, CancellationToken ct = default);
+
+    /// <summary>Deletes a SAP Item master record. Throws SapException with SAP's original status/body on failure (e.g. 400 if the item has transactions and SAP refuses the delete).</summary>
+    public Task DeleteItemAsync(string itemCode, CancellationToken ct = default);
+
     /// <summary>
     /// Fetches full item master data for the given codes in a single Service Layer call.
     /// Codes that do not exist in SAP are simply absent from the result.
@@ -30,6 +43,15 @@ public interface ISapGateway
     /// </summary>
     public Task<IReadOnlyList<ItemResponse>> GetItemsByCodesAsync(IReadOnlyList<string> itemCodes, CancellationToken ct = default);
     public Task<ItemStockResponse?> GetItemStockAsync(string itemCode, string warehouseCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// Pre-loads the ItemGroups map into its cache so the first real item lookup does not
+    /// pay the one-time cost of paging the full ItemGroups collection from Service Layer.
+    /// Safe to call at startup: never throws (a failed load leaves the cache cold so the
+    /// next item request simply retries).
+    /// </summary>
+    public Task PrewarmItemGroupsAsync(CancellationToken ct = default);
+    public Task<(IReadOnlyList<ItemStockResponse> Items, IReadOnlyList<string> NotFound)> GetItemsStockBatchAsync(string warehouseCode, IReadOnlyList<string> itemCodes, CancellationToken ct = default);
     public Task<BusinessPartnerResponse?> GetBusinessPartnerAsync(string cardCode, CancellationToken ct = default);
     public Task<InventoryTransferRequestsListResponse> GetInventoryTransferRequestsByCommentAsync(string commentsContain, CancellationToken ct = default);
     public Task UpdateInventoryTransferRequestStatusAsync(int docEntry, string status, CancellationToken ct = default);
@@ -49,6 +71,15 @@ public interface ISapGateway
     /// Callers must keep <paramref name="warehouseCodes"/> at or below the SL page size (20).
     /// </summary>
     public Task<IReadOnlyList<WarehouseResponse>> GetWarehousesByCodesAsync(IReadOnlyList<string> warehouseCodes, CancellationToken ct = default);
+
+    /// <summary>Fetches the full SAP price list catalog (id + name only).</summary>
+    public Task<IReadOnlyList<PriceListResponse>> GetPriceListsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// True when the item master has positive stock, vendor orders, or customer commitments.
+    /// A missing item (SAP 404) returns false.
+    /// </summary>
+    public Task<bool> HasItemMovementsAsync(string itemCode, CancellationToken ct = default);
 }
 
 public sealed record DocumentCreatedResult(int DocEntry, int DocNum);
@@ -67,5 +98,8 @@ public sealed record SapItemWarehouseData(
     string WarehouseCode,
     decimal InStock,
     decimal Committed,
-    bool Locked
+    bool Locked,
+    // Additive: needed so api-articulo-maestro's check_item_movements_in_sap parity check
+    // (InStock/Committed/Ordered > 0) can be reproduced against this same per-warehouse data.
+    decimal Ordered = 0m
 );

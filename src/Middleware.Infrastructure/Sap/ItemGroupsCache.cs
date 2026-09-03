@@ -27,18 +27,14 @@ public sealed class ItemGroupsCache
     {
         var cached = _map;
         if (cached is not null && DateTimeOffset.UtcNow < _expiresAt)
-        {
             return cached;
-        }
 
         await _lock.WaitAsync(ct);
         try
         {
             cached = _map;
             if (cached is not null && DateTimeOffset.UtcNow < _expiresAt)
-            {
                 return cached;
-            }
 
             try
             {

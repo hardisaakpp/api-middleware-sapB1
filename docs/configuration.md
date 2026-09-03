@@ -118,11 +118,23 @@ Opciones recomendadas según el entorno de despliegue:
 
 | Entorno | Mecanismo recomendado |
 |---|---|
-| Local (desarrollo) | `appsettings.Development.local.json` (en `.gitignore`) |
+| Local (desarrollo) | `dotnet user-secrets` (fuera del repo, en `%APPDATA%\Microsoft\UserSecrets`) |
 | Docker Compose | Variables de entorno en `docker-compose.override.yml` (en `.gitignore`) |
 | Kubernetes | `Secret` + montaje como variables de entorno |
 | Azure | Azure Key Vault + Managed Identity |
 | AWS | AWS Secrets Manager + IAM Role |
+
+`dotnet user-secrets` se carga automáticamente cuando `ASPNETCORE_ENVIRONMENT=Development` (comportamiento
+por defecto de `WebApplication.CreateBuilder`, sin código adicional). Uso:
+
+```bash
+cd src/Middleware.Api
+dotnet user-secrets set "Sap:Password" "tu-password"
+dotnet user-secrets set "Sql:ConnectionString" "Server=...;Password=...;"
+```
+
+`appsettings.{Environment}.local.json` sigue funcionando como capa opcional (ver orden de carga arriba)
+para quien prefiera un archivo JSON en vez de la CLI, pero no es la opción recomendada por defecto.
 
 ---
 
