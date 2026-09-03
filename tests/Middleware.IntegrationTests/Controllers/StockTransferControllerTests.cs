@@ -147,6 +147,33 @@ public sealed class StockTransferControllerTests : IClassFixture<WebApplicationF
     }
 
     [Fact]
+    public async Task Post_StockTransferDirect_WithoutOptionalCorrelationFields_Returns201()
+    {
+        // u_sap_id / u_GUIA_LAAR are optional for the HTTP consumer: a body that omits both keys
+        // entirely (not even "null") must bind and pass validation exactly like one that sends them.
+        var client = _factory.CreateClient();
+
+        const string rawJson = """
+            {
+              "docDate": "2024-06-01",
+              "fromWarehouse": "WH01",
+              "toWarehouse": "WH02",
+              "stockTransferLines": [ { "itemCode": "ITEM001", "quantity": 10, "warehouseCode": "WH02" } ]
+            }
+            """;
+
+        var response = await client.PostAsync(
+            "/api/v1/stock-transfers/direct",
+            new StringContent(rawJson, System.Text.Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var body = await response.Content.ReadFromJsonAsync<StockTransferResult>();
+        body!.DocEntry.Should().Be(45);
+        body.DocNum.Should().Be(1004);
+    }
+
+    [Fact]
     public async Task Post_StockTransferWithBins_Returns201WithDocumentNumbers()
     {
         var client = _factory.CreateClient();
