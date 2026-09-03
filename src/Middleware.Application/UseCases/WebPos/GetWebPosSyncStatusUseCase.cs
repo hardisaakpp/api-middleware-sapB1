@@ -39,7 +39,7 @@ public sealed class GetWebPosSyncStatusUseCase
         string? normalizedStatus = null;
         if (!string.IsNullOrWhiteSpace(status))
         {
-            normalizedStatus = ValidStatuses.FirstOrDefault(s => s.Equals(status.Trim(), StringComparison.OrdinalIgnoreCase))
+            normalizedStatus = Array.Find(ValidStatuses, s => s.Equals(status.Trim(), StringComparison.OrdinalIgnoreCase))
                 ?? throw new ArgumentException($"status inválido: '{status}'. Valores aceptados: SYNCED, REJECTED, SKIPPED_NOT_POS.");
         }
 
@@ -48,5 +48,5 @@ public sealed class GetWebPosSyncStatusUseCase
     }
 
     private static string? NormalizeDocType(string docType) =>
-        ValidDocTypes.FirstOrDefault(t => t.Equals(docType.Trim(), StringComparison.OrdinalIgnoreCase));
+        Array.Find(ValidDocTypes, t => t.Equals(docType.Trim(), StringComparison.OrdinalIgnoreCase));
 }

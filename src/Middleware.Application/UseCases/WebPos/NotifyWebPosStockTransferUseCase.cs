@@ -55,30 +55,17 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
             return new WebPosSyncInfo(WebPosSyncStatus.SkippedNotPos);
         }
 
-        var groupsByBusiness = affectedWarehouses.GroupBy(w => w.CodBusiness!);
+        var groupsByBusiness = affectedWarehouses.GroupBy(w => w.CodBusiness!).ToList();
         var rejectionReasons = new List<string>();
 
-        foreach (var line in request.Lines)
+        foreach (var itemCode in request.Lines.Select(l => l.ItemCode))
         {
             foreach (var group in groupsByBusiness)
             {
-                var storeStock = new List<WebPosStoreStock>();
-                foreach (var warehouse in group)
+                var rejection = await NotifyItemForBusinessAsync(request.DocEntry, itemCode, group.Key, group, cancellationToken);
+                if (rejection is not null)
                 {
-                    var stock = await _sapGateway.GetItemStockForTestCompanyAsync(line.ItemCode, warehouse.WarehouseCode, cancellationToken);
-                    storeStock.Add(new WebPosStoreStock(warehouse.WarehouseCode, stock?.InStock ?? 0m));
-                }
-
-                var outcome = await _webPosGateway.UpdateInventoryAsync(group.Key, line.ItemCode, storeStock, cancellationToken);
-
-                if (!outcome.Success && IsProductNotFoundRejection(outcome.RejectionReason))
-                {
-                    outcome = await RetryWithEnrichmentAsync(request.DocEntry, group.Key, line.ItemCode, storeStock, cancellationToken);
-                }
-
-                if (!outcome.Success)
-                {
-                    rejectionReasons.Add($"{line.ItemCode} ({group.Key}): {outcome.RejectionReason}");
+                    rejectionReasons.Add(rejection);
                 }
             }
         }
@@ -96,6 +83,38 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
         _logger.LogInformation("DocEntry={DocEntry}: stock sincronizado en WEBPOS correctamente", request.DocEntry);
         await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, "SYNCED", null, cancellationToken);
         return new WebPosSyncInfo(WebPosSyncStatus.Synced);
+    }
+
+    /// <summary>
+    /// One WEBPOS call per (item, business) with the absolute post-transfer stock of every
+    /// warehouse of that business. Returns null when WEBPOS accepted, otherwise the rejection
+    /// text to report for the document.
+    /// </summary>
+    private async Task<string?> NotifyItemForBusinessAsync(
+        int docEntry, string itemCode, string codBusiness, IEnumerable<WarehousePosInfo> warehouses, CancellationToken cancellationToken)
+    {
+        var storeStock = await BuildStoreStockAsync(itemCode, warehouses, cancellationToken);
+        var outcome = await _webPosGateway.UpdateInventoryAsync(codBusiness, itemCode, storeStock, cancellationToken);
+
+        if (!outcome.Success && IsProductNotFoundRejection(outcome.RejectionReason))
+        {
+            outcome = await RetryWithEnrichmentAsync(docEntry, codBusiness, itemCode, storeStock, cancellationToken);
+        }
+
+        return outcome.Success ? null : $"{itemCode} ({codBusiness}): {outcome.RejectionReason}";
+    }
+
+    private async Task<List<WebPosStoreStock>> BuildStoreStockAsync(
+        string itemCode, IEnumerable<WarehousePosInfo> warehouses, CancellationToken cancellationToken)
+    {
+        var storeStock = new List<WebPosStoreStock>();
+        foreach (var warehouseCode in warehouses.Select(w => w.WarehouseCode))
+        {
+            var stock = await _sapGateway.GetItemStockForTestCompanyAsync(itemCode, warehouseCode, cancellationToken);
+            storeStock.Add(new WebPosStoreStock(warehouseCode, stock?.InStock ?? 0m));
+        }
+
+        return storeStock;
     }
 
     private static bool IsProductNotFoundRejection(string? reason) =>

@@ -39,6 +39,14 @@ internal sealed class SapGateway : ISapGateway
     private const string InventoryUomProperty = "InventoryUOM";
     private const string PurchaseItemProperty = "PurchaseItem";
     private const string FrozenProperty = "Frozen";
+    private const string FromWarehouseProperty = "FromWarehouse";
+    private const string ToWarehouseProperty = "ToWarehouse";
+    private const string StockTransferLinesProperty = "StockTransferLines";
+    private const string DocDateProperty = "DocDate";
+    private const string ItemNameProperty = "ItemName";
+    private const string BarCodeProperty = "BarCode";
+    private const string ItemWarehouseInfoCollectionProperty = "ItemWarehouseInfoCollection";
+    private const string StockTransfersResource = "StockTransfers";
 
     public SapGateway(
         ISapSessionManager sessionManager,
@@ -87,7 +95,7 @@ internal sealed class SapGateway : ISapGateway
         }, JsonOptions);
 
         var json = await ExecuteWithRetryOn401Async(
-            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
+            HttpMethod.Post, StockTransfersResource, payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
         return ParseDocumentResult(json);
     }
 
@@ -119,7 +127,7 @@ internal sealed class SapGateway : ISapGateway
         // Sin companyDb/password: usa Sap:CompanyDb / Sap:Password (la compañía real), NO
         // Sap:TestCompanyDb — a diferencia de CreateStockTransferBasedOnDocumentAsync de
         // arriba (ese es del sandbox de WebPOS).
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "StockTransfers", payload, ct);
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, StockTransfersResource, payload, ct);
         return ParseDocumentResult(json);
     }
 
@@ -153,7 +161,7 @@ internal sealed class SapGateway : ISapGateway
         try
         {
             var json = await ExecuteWithRetryOn401Async(
-                HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
+                HttpMethod.Post, StockTransfersResource, payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
             return ParseDocumentResult(json);
         }
         catch (TimeoutRejectedException) when (!string.IsNullOrEmpty(request.U_sap_id))
@@ -255,7 +263,7 @@ internal sealed class SapGateway : ISapGateway
         }, JsonOptions);
 
         var json = await ExecuteWithRetryOn401Async(
-            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
+            HttpMethod.Post, StockTransfersResource, payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
         return ParseDocumentResult(json);
     }
 
@@ -280,14 +288,14 @@ internal sealed class SapGateway : ISapGateway
         string GetStr(string f) => root.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
 
         return new StockTransferStatusResponse(
-            GetInt(DocEntryProperty), GetInt(DocNumProperty), GetStr("FromWarehouse"), GetStr("ToWarehouse"),
+            GetInt(DocEntryProperty), GetInt(DocNumProperty), GetStr(FromWarehouseProperty), GetStr(ToWarehouseProperty),
             ParseStockTransferLines(root));
     }
 
     private static List<StockTransferLineStatusResponse> ParseStockTransferLines(JsonElement root)
     {
         var lines = new List<StockTransferLineStatusResponse>();
-        if (!root.TryGetProperty("StockTransferLines", out var linesEl))
+        if (!root.TryGetProperty(StockTransferLinesProperty, out var linesEl))
         {
             return lines;
         }
@@ -498,7 +506,7 @@ internal sealed class SapGateway : ISapGateway
         {
             ["CardCode"] = request.CardCode,
             ["DocType"] = NormalizeLiquidacionText(request.DocType) ?? "dDocument_Service",
-            ["DocDate"] = today,
+            [DocDateProperty] = today,
             ["DocDueDate"] = today,
             ["NumAtCard"] = string.Empty,
             ["Comments"] = NormalizeLiquidacionText(request.Comments) ?? "LIQUIDACION DE COMPRA - API",
@@ -687,7 +695,7 @@ internal sealed class SapGateway : ISapGateway
             RequiredInt(root, DocEntryProperty, "root"),
             RequiredInt(root, DocNumProperty, "root"),
             RequiredString(root, "CardCode", "root"),
-            RequiredString(root, "DocDate", "root"),
+            RequiredString(root, DocDateProperty, "root"),
             RequiredString(root, "DocumentStatus", "root"),
             lines
         );
@@ -722,7 +730,7 @@ internal sealed class SapGateway : ISapGateway
 
         try
         {
-            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"PurchaseOrders({docEntry})", payload, ct);
+            await ExecuteWithRetryOn401Async(HttpMethod.Patch, $"PurchaseOrders({docEntry})", payload, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -740,7 +748,7 @@ internal sealed class SapGateway : ISapGateway
 
         try
         {
-            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"PurchaseOrders({docEntry})", payload, ct);
+            await ExecuteWithRetryOn401Async(HttpMethod.Patch, $"PurchaseOrders({docEntry})", payload, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -762,7 +770,7 @@ internal sealed class SapGateway : ISapGateway
 
         try
         {
-            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"Items('{encoded}')", payload, ct);
+            await ExecuteWithRetryOn401Async(HttpMethod.Patch, $"Items('{encoded}')", payload, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -804,7 +812,7 @@ internal sealed class SapGateway : ISapGateway
         }
         if (itemName is not null)
         {
-            payload["ItemName"] = itemName;
+            payload[ItemNameProperty] = itemName;
         }
         if (itemPrices is { Count: > 0 })
         {
@@ -832,7 +840,7 @@ internal sealed class SapGateway : ISapGateway
     private static Dictionary<string, object?> ExtractItemFields(CreateItemRequest r) => new()
     {
         ["ForeignName"] = r.ForeignName,
-        ["BarCode"] = r.BarCode,
+        [BarCodeProperty] = r.BarCode,
         [InventoryUomProperty] = r.InventoryUOM,
         ["PurchaseUnit"] = r.PurchaseUnit,
         ["PurchaseItemsPerUnit"] = r.PurchaseItemsPerUnit,
@@ -902,7 +910,7 @@ internal sealed class SapGateway : ISapGateway
     private static Dictionary<string, object?> ExtractItemFields(UpdateItemRequest r) => new()
     {
         ["ForeignName"] = r.ForeignName,
-        ["BarCode"] = r.BarCode,
+        [BarCodeProperty] = r.BarCode,
         [InventoryUomProperty] = r.InventoryUOM,
         ["PurchaseUnit"] = r.PurchaseUnit,
         ["PurchaseItemsPerUnit"] = r.PurchaseItemsPerUnit,
@@ -973,7 +981,7 @@ internal sealed class SapGateway : ISapGateway
     // used across this API's "uomCode"/InventoryUoM fields is the string field InventoryUOM
     // (e.g. "UNIDAD") — confirmed against real Service Layer data.
     //
-    // The field is "BarCode" (singular), not "CodeBars" — this SAP instance rejects
+    // The field is BarCodeProperty (singular), not "CodeBars" — this SAP instance rejects
     // "CodeBars" with -1000 "Property 'CodeBars' of 'Item' is invalid" (verified live
     // 2026-08-07; the original 2026-08-06 fix never hit real SAP, only fixtures). The
     // external contract's JSON property stays "codeBars" (camelCase) — only the SAP
@@ -1119,13 +1127,13 @@ internal sealed class SapGateway : ISapGateway
 
         // Present only when the caller's $select included ItemWarehouseInfoCollection
         // (GetItemsByCodesAsync); absent for GetItemAsync, which leaves Warehouses null.
-        var warehouses = root.TryGetProperty("ItemWarehouseInfoCollection", out _)
+        var warehouses = root.TryGetProperty(ItemWarehouseInfoCollectionProperty, out _)
             ? ParseItemWarehouses(root)
             : null;
 
         return new ItemResponse(
             StrOpt(ItemCodeProperty) ?? fallbackItemCode,
-            StrOpt("ItemName") ?? string.Empty,
+            StrOpt(ItemNameProperty) ?? string.Empty,
             StrOpt(InventoryUomProperty),
             GetDecimalOrZero(root, "QuantityOnStock"),
             IsTyes(root, PurchaseItemProperty),
@@ -1139,7 +1147,7 @@ internal sealed class SapGateway : ISapGateway
             groupCode is int g && groups.TryGetValue(g, out var groupName) ? groupName : null,
             StrOptNormalized("Mainsupplier"),
             pvp,
-            StrOptNormalized("BarCode"),
+            StrOptNormalized(BarCodeProperty),
             StrOptNormalized("U_MARCA"),
             warehouses
         );
@@ -1277,7 +1285,7 @@ internal sealed class SapGateway : ISapGateway
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        if (!root.TryGetProperty("ItemWarehouseInfoCollection", out var collection))
+        if (!root.TryGetProperty(ItemWarehouseInfoCollectionProperty, out var collection))
         {
             return null;
         }
@@ -1332,9 +1340,9 @@ internal sealed class SapGateway : ISapGateway
                 continue;
             }
 
-            var itemName = item.TryGetProperty("ItemName", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+            var itemName = item.TryGetProperty(ItemNameProperty, out var nameEl) && nameEl.ValueKind == JsonValueKind.String
                 ? nameEl.GetString()! : string.Empty;
-            var barCode = item.TryGetProperty("BarCode", out var bcEl) && bcEl.ValueKind == JsonValueKind.String
+            var barCode = item.TryGetProperty(BarCodeProperty, out var bcEl) && bcEl.ValueKind == JsonValueKind.String
                 ? bcEl.GetString() : null;
             var uom = item.TryGetProperty("InventoryUOM", out var uomEl) && uomEl.ValueKind == JsonValueKind.String
                 ? uomEl.GetString() : null;
@@ -1363,7 +1371,7 @@ internal sealed class SapGateway : ISapGateway
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        if (!root.TryGetProperty("ItemWarehouseInfoCollection", out var collection))
+        if (!root.TryGetProperty(ItemWarehouseInfoCollectionProperty, out var collection))
         {
             return [];
         }
@@ -1445,37 +1453,49 @@ internal sealed class SapGateway : ISapGateway
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            if (root.TryGetProperty(ValueProperty, out var arr))
-            {
-                foreach (var entry in arr.EnumerateArray())
-                {
-                    if (!entry.TryGetProperty(WarehouseCodeProperty, out var wc) || wc.ValueKind != JsonValueKind.String)
-                    {
-                        continue;
-                    }
-
-                    var code = wc.GetString()!;
-
-                    // U_WEBPOS is a plain alphanumeric UDF ('S'/other), not a SAP boolean field —
-                    // it must be compared as a string, unlike IsTyes()'s tYES/tNO encoding.
-                    var isPosEnabled = entry.TryGetProperty("U_WEBPOS", out var wp) &&
-                        wp.ValueKind == JsonValueKind.String &&
-                        string.Equals(wp.GetString(), "S", StringComparison.OrdinalIgnoreCase);
-
-                    var codBusiness = entry.TryGetProperty("U_NEGOCIO", out var neg) &&
-                        neg.ValueKind == JsonValueKind.String &&
-                        !string.IsNullOrWhiteSpace(neg.GetString())
-                            ? neg.GetString()
-                            : null;
-
-                    result[code] = new WarehousePosInfo(code, isPosEnabled, codBusiness);
-                }
-            }
-
+            CollectWarehousePosInfoPage(root, result);
             resource = GetNextLink(root);
         }
 
         return result;
+    }
+
+    private static void CollectWarehousePosInfoPage(JsonElement root, Dictionary<string, WarehousePosInfo> result)
+    {
+        if (!root.TryGetProperty(ValueProperty, out var arr))
+        {
+            return;
+        }
+
+        foreach (var entry in arr.EnumerateArray())
+        {
+            var info = ParseWarehousePosInfo(entry);
+            if (info is not null)
+            {
+                result[info.WarehouseCode] = info;
+            }
+        }
+    }
+
+    private static WarehousePosInfo? ParseWarehousePosInfo(JsonElement entry)
+    {
+        var code = StringOrNull(entry, WarehouseCodeProperty);
+        if (code is null)
+        {
+            return null;
+        }
+
+        // U_WEBPOS is a plain alphanumeric UDF ('S'/other), not a SAP boolean field —
+        // it must be compared as a string, unlike IsTyes()'s tYES/tNO encoding.
+        var isPosEnabled = string.Equals(StringOrNull(entry, "U_WEBPOS"), "S", StringComparison.OrdinalIgnoreCase);
+
+        var codBusiness = StringOrNull(entry, "U_NEGOCIO");
+        if (string.IsNullOrWhiteSpace(codBusiness))
+        {
+            codBusiness = null;
+        }
+
+        return new WarehousePosInfo(code, isPosEnabled, codBusiness);
     }
 
     public async Task<StockTransferDocumentResponse?> GetStockTransferForTestCompanyAsync(int docEntry, CancellationToken ct = default)
@@ -1498,32 +1518,36 @@ internal sealed class SapGateway : ISapGateway
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        int GetInt(string f) => root.TryGetProperty(f, out var p) && p.TryGetInt32(out var v) ? v : 0;
-        string GetStr(string f) => root.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
+        var fromWarehouse = StringOrEmpty(root, FromWarehouseProperty);
+        var toWarehouse = StringOrEmpty(root, ToWarehouseProperty);
 
-        var fromWarehouse = GetStr("FromWarehouse");
-        var toWarehouse = GetStr("ToWarehouse");
+        return new StockTransferDocumentResponse(
+            IntOrZero(root, DocEntryProperty), IntOrZero(root, DocNumProperty),
+            fromWarehouse, toWarehouse, ParseStockTransferDocumentLines(root, toWarehouse));
+    }
 
+    // A line without its own WarehouseCode receives the document-level ToWarehouse.
+    private static List<StockTransferDocumentLine> ParseStockTransferDocumentLines(JsonElement root, string toWarehouse)
+    {
         var lines = new List<StockTransferDocumentLine>();
-        if (root.TryGetProperty("StockTransferLines", out var linesEl) && linesEl.ValueKind == JsonValueKind.Array)
+        if (!root.TryGetProperty(StockTransferLinesProperty, out var linesEl) || linesEl.ValueKind != JsonValueKind.Array)
         {
-            foreach (var line in linesEl.EnumerateArray())
-            {
-                if (!line.TryGetProperty(ItemCodeProperty, out var ic) || ic.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                var quantity = line.TryGetProperty("Quantity", out var q) && q.TryGetDecimal(out var qv) ? qv : 0m;
-                var warehouseCode = line.TryGetProperty(WarehouseCodeProperty, out var w) && w.ValueKind == JsonValueKind.String
-                    ? w.GetString()!
-                    : toWarehouse;
-
-                lines.Add(new StockTransferDocumentLine(ic.GetString()!, quantity, warehouseCode));
-            }
+            return lines;
         }
 
-        return new StockTransferDocumentResponse(GetInt("DocEntry"), GetInt("DocNum"), fromWarehouse, toWarehouse, lines);
+        foreach (var line in linesEl.EnumerateArray())
+        {
+            var itemCode = StringOrNull(line, ItemCodeProperty);
+            if (itemCode is null)
+            {
+                continue;
+            }
+
+            var warehouseCode = StringOrNull(line, WarehouseCodeProperty) ?? toWarehouse;
+            lines.Add(new StockTransferDocumentLine(itemCode, DecimalOrZero(line, QuantityProperty), warehouseCode));
+        }
+
+        return lines;
     }
 
     public async Task<GoodsReceiptDocumentResponse?> GetGoodsReceiptAsync(int docEntry, CancellationToken ct = default)
@@ -1544,29 +1568,32 @@ internal sealed class SapGateway : ISapGateway
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        int GetInt(string f) => root.TryGetProperty(f, out var p) && p.TryGetInt32(out var v) ? v : 0;
+        return new GoodsReceiptDocumentResponse(
+            IntOrZero(root, DocEntryProperty), IntOrZero(root, DocNumProperty), ParseGoodsReceiptDocumentLines(root));
+    }
 
+    // Lines without ItemCode or WarehouseCode are skipped: they cannot be mapped to a WEBPOS store stock.
+    private static List<GoodsReceiptDocumentLine> ParseGoodsReceiptDocumentLines(JsonElement root)
+    {
         var lines = new List<GoodsReceiptDocumentLine>();
-        if (root.TryGetProperty("DocumentLines", out var linesEl) && linesEl.ValueKind == JsonValueKind.Array)
+        if (!root.TryGetProperty(DocumentLinesProperty, out var linesEl) || linesEl.ValueKind != JsonValueKind.Array)
         {
-            foreach (var line in linesEl.EnumerateArray())
-            {
-                if (!line.TryGetProperty(ItemCodeProperty, out var ic) || ic.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                if (!line.TryGetProperty(WarehouseCodeProperty, out var w) || w.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                var quantity = line.TryGetProperty("Quantity", out var q) && q.TryGetDecimal(out var qv) ? qv : 0m;
-                lines.Add(new GoodsReceiptDocumentLine(ic.GetString()!, quantity, w.GetString()!));
-            }
+            return lines;
         }
 
-        return new GoodsReceiptDocumentResponse(GetInt("DocEntry"), GetInt("DocNum"), lines);
+        foreach (var line in linesEl.EnumerateArray())
+        {
+            var itemCode = StringOrNull(line, ItemCodeProperty);
+            var warehouseCode = StringOrNull(line, WarehouseCodeProperty);
+            if (itemCode is null || warehouseCode is null)
+            {
+                continue;
+            }
+
+            lines.Add(new GoodsReceiptDocumentLine(itemCode, DecimalOrZero(line, QuantityProperty), warehouseCode));
+        }
+
+        return lines;
     }
 
     /// <summary>
@@ -1606,50 +1633,85 @@ internal sealed class SapGateway : ISapGateway
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        string? price = null;
-        if (root.TryGetProperty("ItemPrices", out var prices) && prices.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var p in prices.EnumerateArray())
-            {
-                var isPriceList1 = p.TryGetProperty("PriceList", out var pl) &&
-                    (pl.ValueKind == JsonValueKind.String ? pl.GetString() == "1" : pl.ValueKind == JsonValueKind.Number && pl.TryGetInt32(out var plNum) && plNum == 1);
-
-                if (isPriceList1 && p.TryGetProperty("Price", out var priceEl) && priceEl.TryGetDecimal(out var priceVal))
-                {
-                    price = Math.Round(priceVal, 3).ToString(CultureInfo.InvariantCulture);
-                    break;
-                }
-            }
-        }
-
-        var brand = root.TryGetProperty("U_IXX_MARCA", out var b) && b.ValueKind == JsonValueKind.String
-            ? b.GetString()
-            : null;
+        var price = ExtractPriceList1(root);
+        var brand = StringOrNull(root, "U_IXX_MARCA");
 
         string? codeTax = null;
-        if (root.TryGetProperty("ArTaxCode", out var taxCodeEl) &&
-            taxCodeEl.ValueKind == JsonValueKind.String &&
-            !string.IsNullOrWhiteSpace(taxCodeEl.GetString()))
+        var arTaxCode = StringOrNull(root, "ArTaxCode");
+        if (!string.IsNullOrWhiteSpace(arTaxCode))
         {
-            codeTax = await TryGetTaxInterkeyAsync(taxCodeEl.GetString()!, companyDb, password, ct);
+            codeTax = await TryGetTaxInterkeyAsync(arTaxCode, companyDb, password, ct);
         }
 
-        var barcodes = new List<string>();
-        if (root.TryGetProperty("ItemBarCodeCollection", out var bc) && bc.ValueKind == JsonValueKind.Array)
+        return new ItemPosEnrichment(price, brand, codeTax, ExtractBarcodes(root));
+    }
+
+    /// <summary>Price of price list 1 as WEBPOS expects it (3 decimals, invariant culture), or null if the item has none.</summary>
+    private static string? ExtractPriceList1(JsonElement root)
+    {
+        if (!root.TryGetProperty("ItemPrices", out var prices) || prices.ValueKind != JsonValueKind.Array)
         {
-            foreach (var entry in bc.EnumerateArray())
+            return null;
+        }
+
+        foreach (var p in prices.EnumerateArray())
+        {
+            if (IsPriceList1(p) && p.TryGetProperty("Price", out var priceEl) && priceEl.TryGetDecimal(out var priceVal))
             {
-                if (entry.TryGetProperty("Barcode", out var bcEl) &&
-                    bcEl.ValueKind == JsonValueKind.String &&
-                    !string.IsNullOrWhiteSpace(bcEl.GetString()))
-                {
-                    barcodes.Add(bcEl.GetString()!);
-                }
+                return Math.Round(priceVal, 3).ToString(CultureInfo.InvariantCulture);
             }
         }
 
-        return new ItemPosEnrichment(price, brand, codeTax, barcodes);
+        return null;
     }
+
+    // SAP serializes PriceList either as a number or as a string depending on the SL version.
+    private static bool IsPriceList1(JsonElement priceEntry)
+    {
+        if (!priceEntry.TryGetProperty("PriceList", out var pl))
+        {
+            return false;
+        }
+
+        return pl.ValueKind switch
+        {
+            JsonValueKind.String => pl.GetString() == "1",
+            JsonValueKind.Number => pl.TryGetInt32(out var plNum) && plNum == 1,
+            _ => false
+        };
+    }
+
+    private static List<string> ExtractBarcodes(JsonElement root)
+    {
+        var barcodes = new List<string>();
+        if (!root.TryGetProperty("ItemBarCodeCollection", out var bc) || bc.ValueKind != JsonValueKind.Array)
+        {
+            return barcodes;
+        }
+
+        foreach (var entry in bc.EnumerateArray())
+        {
+            var barcode = StringOrNull(entry, "Barcode");
+            if (!string.IsNullOrWhiteSpace(barcode))
+            {
+                barcodes.Add(barcode);
+            }
+        }
+
+        return barcodes;
+    }
+
+    private static string? StringOrNull(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+
+    private static string StringOrEmpty(JsonElement element, string property) =>
+        StringOrNull(element, property) ?? string.Empty;
+
+    private static int IntOrZero(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var p) && p.TryGetInt32(out var v) ? v : 0;
+
+    private static decimal DecimalOrZero(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var p) && p.TryGetDecimal(out var v) ? v : 0m;
 
     private async Task<string?> TryGetTaxInterkeyAsync(string taxCode, string? companyDb, string? password, CancellationToken ct)
     {
@@ -1811,7 +1873,7 @@ internal sealed class SapGateway : ISapGateway
             string GetStr(string f) => item.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
             string? GetStrOpt(string f) => item.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 
-            var lines = item.TryGetProperty("StockTransferLines", out var linesEl)
+            var lines = item.TryGetProperty(StockTransferLinesProperty, out var linesEl)
                 ? linesEl.EnumerateArray().Select((l, i) => new InventoryTransferRequestLineResponse(
                     l.TryGetProperty("LineNum", out var ln) && ln.TryGetInt32(out var lv) ? lv : i,
                     l.TryGetProperty(ItemCodeProperty, out var li) && li.ValueKind == JsonValueKind.String ? li.GetString()! : string.Empty,
@@ -1824,9 +1886,9 @@ internal sealed class SapGateway : ISapGateway
                 GetInt(DocEntryProperty),
                 GetInt(DocNumProperty),
                 GetStrOpt("Comments"),
-                GetStr("FromWarehouse"),
-                GetStr("ToWarehouse"),
-                GetStr("DocDate"),
+                GetStr(FromWarehouseProperty),
+                GetStr(ToWarehouseProperty),
+                GetStr(DocDateProperty),
                 GetStr("DocumentStatus"),
                 lines
             );
@@ -1844,7 +1906,7 @@ internal sealed class SapGateway : ISapGateway
 
         try
         {
-            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"InventoryTransferRequests({docEntry})", payload, ct);
+            await ExecuteWithRetryOn401Async(HttpMethod.Patch, $"InventoryTransferRequests({docEntry})", payload, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -1912,12 +1974,12 @@ internal sealed class SapGateway : ISapGateway
         string? OptString(JsonElement el, string field)
             => el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 
-        var lines = root.TryGetProperty("StockTransferLines", out var linesEl)
+        var lines = root.TryGetProperty(StockTransferLinesProperty, out var linesEl)
             ? linesEl.EnumerateArray()
                 .Select((l, i) => new InventoryTransferRequestLineResponse(
                     RequiredInt(l, "LineNum", $"StockTransferLines[{i}]"),
                     RequiredString(l, ItemCodeProperty, $"StockTransferLines[{i}]"),
-                    RequiredDecimal(l, "Quantity", $"StockTransferLines[{i}]"),
+                    RequiredDecimal(l, QuantityProperty, $"StockTransferLines[{i}]"),
                     RequiredString(l, WarehouseCodeProperty, $"StockTransferLines[{i}]"),
                     // Confirmado en vivo contra TEST_MABEL: el campo real es "RemainingOpenQuantity"
                     // (mismo nombre que en PurchaseOrders) — no "OpenQuantity".
@@ -1928,12 +1990,12 @@ internal sealed class SapGateway : ISapGateway
             : (IReadOnlyList<InventoryTransferRequestLineResponse>)[];
 
         return new InventoryTransferRequestResponse(
-            RequiredInt(root, "DocEntry", "root"),
-            RequiredInt(root, "DocNum", "root"),
+            RequiredInt(root, DocEntryProperty, "root"),
+            RequiredInt(root, DocNumProperty, "root"),
             OptString(root, "Comments"),
-            RequiredString(root, "FromWarehouse", "root"),
-            RequiredString(root, "ToWarehouse", "root"),
-            RequiredString(root, "DocDate", "root"),
+            RequiredString(root, FromWarehouseProperty, "root"),
+            RequiredString(root, ToWarehouseProperty, "root"),
+            RequiredString(root, DocDateProperty, "root"),
             RequiredString(root, "DocumentStatus", "root"),
             lines
         );
@@ -1981,7 +2043,7 @@ internal sealed class SapGateway : ISapGateway
 
         return new SapItemValidationData(
             ic.GetString()!,
-            item.TryGetProperty("ItemName", out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
+            item.TryGetProperty(ItemNameProperty, out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
             IsTyes(item, PurchaseItemProperty),
             IsTyes(item, "Valid"),
             IsTyes(item, FrozenProperty),
@@ -1993,7 +2055,7 @@ internal sealed class SapGateway : ISapGateway
     private static List<SapItemWarehouseData> ParseItemWarehouses(JsonElement item)
     {
         var warehouses = new List<SapItemWarehouseData>();
-        if (!item.TryGetProperty("ItemWarehouseInfoCollection", out var collection) ||
+        if (!item.TryGetProperty(ItemWarehouseInfoCollectionProperty, out var collection) ||
             collection.ValueKind != JsonValueKind.Array)
         {
             return warehouses;
