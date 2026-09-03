@@ -556,21 +556,46 @@ Cada notificación (creación o retry, transferencia o entrada) deja su resultad
 
 ### GET /webpos/sync-status/{docType}/{docEntry}
 
-Estado de integración de un documento puntual. `docType`: `ST` o `GR` (case-insensitive).
+Estado de integración de un documento puntual, **ya interpretado** para la UI: el cliente no
+tiene que conocer los textos de HITELL. `docType`: `ST` o `GR` (case-insensitive).
 
 **Respuesta — 200 OK**
 
 ```json
 {
   "docType": "ST",
-  "docEntry": 587039,
+  "docEntry": 587065,
   "status": "REJECTED",
-  "reason": "SKBLZ0147 (1): El producto no existe.",
-  "attempts": 2,
-  "createdAt": "2026-09-03T10:15:00",
-  "updatedAt": "2026-09-03T10:22:41"
+  "result": "RECHAZADO",
+  "reason": "LIMP0027 (1): No entity found for query",
+  "attempts": 1,
+  "createdAt": "2026-09-03T22:15:30",
+  "updatedAt": null,
+  "rejection": {
+    "type": "PRODUCTO_NO_EXISTE",
+    "description": "Producto no creado en HITELL: LIMP0027. Crear el producto en HITELL y reintegrar.",
+    "items": [
+      { "itemCode": "LIMP0027", "codBusiness": "1", "message": "No entity found for query", "type": "PRODUCTO_NO_EXISTE" }
+    ],
+    "retryEndpoint": "/api/v1/webpos/stock-transfers/587065/retry"
+  }
 }
 ```
+
+| Campo | Significado |
+|---|---|
+| `status` | Valor persistido: `SYNCED` \| `SKIPPED_NOT_POS` \| `REJECTED` |
+| `result` | Lectura de negocio para mostrar: `INTEGRADO` \| `NO_CORRESPONDE` \| `RECHAZADO` |
+| `reason` | Texto crudo de HITELL (`ITEM (negocio): mensaje`, varios separados por ` \| `). Solo informativo |
+| `rejection` | Solo cuando `result = RECHAZADO`; `null` en los demás casos |
+| `rejection.type` | `PRODUCTO_NO_EXISTE` cuando **todos** los ítems rechazados no existen en HITELL para ese negocio (HITELL responde `El producto no existe.` o `No entity found for query`). `OTRO` para cualquier otro rechazo |
+| `rejection.description` | Texto listo para mostrar al usuario, con los ítems a crear cuando aplica |
+| `rejection.items[]` | Un elemento por (ítem, negocio) rechazado, con su mensaje y su `type` individual |
+| `rejection.retryEndpoint` | Endpoint a invocar (POST) una vez corregido en HITELL, según `docType` |
+
+Flujo esperado en la UI: mostrar `result`; si es `RECHAZADO` y `rejection.type` es
+`PRODUCTO_NO_EXISTE`, informar que el producto no está creado en HITELL; cuando lo creen,
+invocar `rejection.retryEndpoint` y volver a consultar hasta que `result` sea `INTEGRADO`.
 
 **Códigos de error**
 
@@ -581,15 +606,20 @@ Estado de integración de un documento puntual. `docType`: `ST` o `GR` (case-ins
 
 ### GET /webpos/sync-status
 
-Lista estados, más reciente primero. Query params opcionales: `status`
-(`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`), `docType` (`ST` \| `GR`) y `top` (default 100,
-máx 500). Uso típico del cliente (Nexus): `?status=REJECTED` como bandeja de documentos
-pendientes de reintegración.
+Lista estados con la misma forma que el endpoint puntual, más reciente primero. Query params
+opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`), `docType` (`ST` \| `GR`),
+`rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica `status=REJECTED`) y `top` (default 100,
+máx 500).
+
+Usos típicos del cliente (Nexus):
+
+- `?status=REJECTED` — bandeja de documentos pendientes de reintegración.
+- `?rejectionType=PRODUCTO_NO_EXISTE` — qué productos hay que crear en HITELL; `rejection.items[].itemCode` da el listado.
 
 **Respuesta — 200 OK**
 
 ```json
-{ "entries": [ { "docType": "GR", "docEntry": 55, "status": "REJECTED", "...": "..." } ] }
+{ "entries": [ { "docType": "ST", "docEntry": 587065, "status": "REJECTED", "result": "RECHAZADO", "rejection": { "type": "PRODUCTO_NO_EXISTE", "...": "..." } } ] }
 ```
 
 ---

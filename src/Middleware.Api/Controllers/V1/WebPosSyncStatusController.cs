@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using Middleware.Application.Dtos.Responses;
 using Middleware.Application.UseCases.WebPos;
 
 namespace Middleware.Api.Controllers.V1;
@@ -21,9 +22,14 @@ public sealed class WebPosSyncStatusController : ControllerBase
         _useCase = useCase;
     }
 
-    /// <summary>Estado de un documento puntual. docType: ST (transferencia) o GR (entrada de mercadería).</summary>
+    /// <summary>
+    /// Estado de un documento puntual. docType: ST (transferencia) o GR (entrada de mercadería).
+    /// <c>result</c> es la lectura de negocio (INTEGRADO / NO_CORRESPONDE / RECHAZADO); cuando es
+    /// RECHAZADO, <c>rejection</c> indica si el producto no existe en HITELL (PRODUCTO_NO_EXISTE),
+    /// los ítems afectados y el endpoint de reintegración.
+    /// </summary>
     [HttpGet("{docType}/{docEntry:int}")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(WebPosSyncStatusResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Get(string docType, int docEntry, CancellationToken cancellationToken)
@@ -41,8 +47,9 @@ public sealed class WebPosSyncStatusController : ControllerBase
 
     /// <summary>
     /// Lista estados, más reciente primero. Filtros opcionales: status (SYNCED | REJECTED |
-    /// SKIPPED_NOT_POS) y docType (ST | GR). Uso típico: ?status=REJECTED para la bandeja de
-    /// documentos pendientes de reintegración.
+    /// SKIPPED_NOT_POS), docType (ST | GR) y rejectionType (PRODUCTO_NO_EXISTE | OTRO, implica
+    /// status=REJECTED). Uso típico: ?rejectionType=PRODUCTO_NO_EXISTE para la lista de productos
+    /// que hay que crear en HITELL antes de reintegrar.
     /// </summary>
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -50,10 +57,11 @@ public sealed class WebPosSyncStatusController : ControllerBase
     public async Task<IActionResult> List(
         [FromQuery] string? status,
         [FromQuery] string? docType,
+        [FromQuery] string? rejectionType,
         [FromQuery] int top = 100,
         CancellationToken cancellationToken = default)
     {
-        var entries = await _useCase.ListAsync(status, docType, top, cancellationToken);
+        var entries = await _useCase.ListAsync(status, docType, rejectionType, top, cancellationToken);
         return Ok(new { entries });
     }
 }
