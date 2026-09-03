@@ -41,7 +41,9 @@ public sealed class CreateStockTransferDirectUseCaseTests
             U_ORIGEN: null,
             Series: null,
             PriceList: null,
-            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 10m, "WH02")]
+            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 10m, "WH02")],
+            U_sap_id: null,
+            U_GUIA_LAAR: null
         );
 
         _gatewayMock
@@ -69,7 +71,9 @@ public sealed class CreateStockTransferDirectUseCaseTests
             U_ORIGEN: null,
             Series: null,
             PriceList: null,
-            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 5m, "WH02")]
+            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 5m, "WH02")],
+            U_sap_id: null,
+            U_GUIA_LAAR: null
         );
 
         _gatewayMock
@@ -101,7 +105,9 @@ public sealed class CreateStockTransferDirectUseCaseTests
             U_ORIGEN: null,
             Series: null,
             PriceList: null,
-            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 10m, "WH02")]
+            StockTransferLines: [new StockTransferDirectLineDto("ITEM001", 10m, "WH02")],
+            U_sap_id: null,
+            U_GUIA_LAAR: null
         );
 
         _gatewayMock

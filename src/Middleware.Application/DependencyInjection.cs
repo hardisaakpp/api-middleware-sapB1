@@ -9,6 +9,7 @@ using Middleware.Application.UseCases.GoodsReceipt;
 using Middleware.Application.UseCases.InventoryTransferRequests;
 using Middleware.Application.UseCases.Items;
 using Middleware.Application.UseCases.Liquidaciones;
+using Middleware.Application.UseCases.PriceLists;
 using Middleware.Application.UseCases.PurchaseOrders;
 using Middleware.Application.UseCases.StockTransfer;
 using Middleware.Application.UseCases.Validations;
@@ -34,6 +35,10 @@ public static class DependencyInjection
         services.AddScoped<RetryWebPosGoodsReceiptUseCase>();
         services.AddScoped<IWebPosGoodsReceiptNotifier, WebPosGoodsReceiptNotifier>();
         services.AddScoped<GetWebPosSyncStatusUseCase>();
+        services.AddScoped<GetStockTransferByCorrelationIdUseCase>();
+        services.AddScoped<GetStockTransferStatusUseCase>();
+
+
         services.AddScoped<CreateDepositUseCase>();
         services.AddScoped<CreateGoodsReceiptUseCase>();
         services.AddScoped<CreateLiquidacionUseCase>();
@@ -46,7 +51,14 @@ public static class DependencyInjection
         services.AddScoped<GetItemStockUseCase>();
         services.AddScoped<SearchItemsUseCase>();
         services.AddScoped<GetItemStockAllWarehousesUseCase>();
+        services.AddScoped<GetItemsAvailableStockBatchUseCase>();
+
         services.AddScoped<GetItemsBatchUseCase>();
+        services.AddScoped<GetItemsStockBatchUseCase>();
+        services.AddScoped<CreateItemUseCase>();
+        services.AddScoped<UpdateItemUseCase>();
+        services.AddScoped<DeleteItemUseCase>();
+        services.AddScoped<HasItemMovementsUseCase>();
         services.AddScoped<GetBusinessPartnerUseCase>();
         services.AddScoped<GetInventoryTransferRequestsByCommentUseCase>();
         services.AddScoped<GetInventoryTransferRequestsUseCase>();
@@ -55,6 +67,7 @@ public static class DependencyInjection
         services.AddScoped<ValidatePurchaseOrderUseCase>();
         services.AddScoped<GetWarehousesUseCase>();
         services.AddScoped<ValidateWarehousesUseCase>();
+        services.AddScoped<GetPriceListsUseCase>();
 
         services.AddScoped<IJobHandler, CreatePurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();
@@ -74,6 +87,10 @@ public static class DependencyInjection
         services.AddScoped<IJobHandler, GetItemStockJobHandler>();
         services.AddScoped<IJobHandler, SearchItemsJobHandler>();
         services.AddScoped<IJobHandler, GetItemStockAllWarehousesJobHandler>();
+        services.AddScoped<IJobHandler, GetItemsBatchJobHandler>();
+        services.AddScoped<IJobHandler, CreateItemJobHandler>();
+        services.AddScoped<IJobHandler, UpdateItemJobHandler>();
+        services.AddScoped<IJobHandler, DeleteItemJobHandler>();
         services.AddScoped<IJobHandler, GetInventoryTransferRequestsByCommentJobHandler>();
         services.AddScoped<IJobHandler, GetInventoryTransferRequestsJobHandler>();
         services.AddScoped<IJobHandler, GetInventoryTransferRequestJobHandler>();

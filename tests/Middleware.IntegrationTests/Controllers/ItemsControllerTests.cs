@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -22,6 +23,11 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
         }
         """;
 
+    // ItemPrices ya NO viene en la respuesta base del ítem: SAP rechaza
+    // $expand=ItemPrices con -1000 "Cannot expand invalid navigation property"
+    // (verificado en vivo contra Service Layer real el 2026-08-07). Solo es
+    // accesible como sub-recurso propio, Items('CODE')/ItemPrices — ver
+    // ItemPricesJson y GetPrecioMinoristaAsync en SapGateway.
     private const string FullItemJson = """
         {
             "ItemCode": "R190.1012",
@@ -37,7 +43,17 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
             "ItemType": "itItems",
             "ItemsGroupCode": 105,
             "Mainsupplier": "P1790389219001",
-            "U_IXX_PACK": "PACK-12"
+            "U_IXX_PACK": "PACK-12",
+            "BarCode": "7861215678025"
+        }
+        """;
+
+    private const string ItemPricesJson = """
+        {
+            "ItemPrices": [
+                { "PriceList": 2, "Price": 9.99, "Currency": "USD" },
+                { "PriceList": 1, "Price": 6.99, "Currency": "USD" }
+            ]
         }
         """;
 
@@ -90,7 +106,9 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
     }
 
     private static string DefaultResponder(string url) =>
-        url.StartsWith("ItemGroups", StringComparison.Ordinal) ? ItemGroupsJson : FullItemJson;
+        url.StartsWith("ItemGroups", StringComparison.Ordinal) ? ItemGroupsJson
+        : url.Contains("/ItemPrices", StringComparison.Ordinal) ? ItemPricesJson
+        : FullItemJson;
 
     [Fact]
     public async Task Get_ItemWithPackAndPreferredVendor_ReturnsExtendedFields()
@@ -116,6 +134,9 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
         root.GetProperty("groupCode").GetInt32().Should().Be(105);
         root.GetProperty("groupName").GetString().Should().Be("R-MEDIAS");
         root.GetProperty("preferredVendorCode").GetString().Should().Be("P1790389219001");
+        root.GetProperty("codeBars").GetString().Should().Be("7861215678025");
+        root.GetProperty("pvp").GetDecimal().Should().Be(6.99m,
+            "PriceList 1 is 'Precio Minorista'; the 9.99 entry (PriceList 2) must be ignored");
     }
 
     [Fact]
@@ -138,6 +159,108 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
         root.TryGetProperty("groupName", out _).Should().BeFalse();
         root.TryGetProperty("packCode", out _).Should().BeFalse();
         root.TryGetProperty("preferredVendorCode", out _).Should().BeFalse();
+        root.TryGetProperty("codeBars", out _).Should().BeFalse();
+        root.TryGetProperty("pvp", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Get_ItemPricesWithoutPrecioMinoristaEntry_OmitsPvp()
+    {
+        // The item has other price lists configured, but none is PriceList 1 ("Precio
+        // Minorista") — pvp must come back omitted, not accidentally pick another list's price.
+        const string itemWithoutPriceListJson = """
+            {
+                "ItemCode": "R190.1012",
+                "ItemName": "CASUAL LISA X1",
+                "QuantityOnStock": 10.0,
+                "PurchaseItem": "tYES",
+                "SalesItem": "tYES",
+                "InventoryItem": "tYES",
+                "Valid": "tYES",
+                "Frozen": "tNO",
+                "ItemType": "itItems",
+                "ItemsGroupCode": 105
+            }
+            """;
+        const string pricesWithoutPrecioMinoristaJson = """
+            {
+                "ItemPrices": [
+                    { "PriceList": 2, "Price": 9.99, "Currency": "USD" },
+                    { "PriceList": 3, "Price": 12.50, "Currency": "USD" }
+                ]
+            }
+            """;
+        var fake = new ScriptedSapClient(url =>
+            url.StartsWith("ItemGroups", StringComparison.Ordinal) ? ItemGroupsJson
+            : url.Contains("/ItemPrices", StringComparison.Ordinal) ? pricesWithoutPrecioMinoristaJson
+            : itemWithoutPriceListJson);
+        var client = CreateClient(fake);
+
+        var response = await client.GetAsync("/api/v1/items/R190.1012");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        body.RootElement.TryGetProperty("pvp", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Get_ItemPricesSubresourceRejectedBySap_OmitsPvpWithoutFailingTheItem()
+    {
+        // Regresión del incidente 2026-08-07: SAP puede rechazar la consulta de precio
+        // (aquí, con el mismo error real -1000 que causó el bug original) para un ítem
+        // que de otro modo existe y resuelve bien. pvp debe quedar omitido; el resto del
+        // ítem no debe verse afectado por esa falla.
+        var fake = new ScriptedSapClient(url =>
+            url.StartsWith("ItemGroups", StringComparison.Ordinal) ? ItemGroupsJson
+            : url.Contains("/ItemPrices", StringComparison.Ordinal)
+                ? throw new SapException(HttpStatusCode.BadRequest, "SAP rejected the ItemPrices sub-resource")
+                : FullItemJson);
+        var client = CreateClient(fake);
+
+        var response = await client.GetAsync("/api/v1/items/R190.1012");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        body.RootElement.GetProperty("itemCode").GetString().Should().Be("R190.1012");
+        body.RootElement.TryGetProperty("pvp", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Get_Item_NeverSendsExpandItemPrices()
+    {
+        // Regresión directa del incidente 2026-08-07: SAP rechaza $expand=ItemPrices
+        // con -1000 "Cannot expand invalid navigation property" — verificado en vivo
+        // contra Service Layer real. El precio se resuelve por el sub-recurso propio
+        // (Items('CODE')/ItemPrices), nunca por $expand en la consulta del ítem base.
+        var fake = new ScriptedSapClient(DefaultResponder);
+        var client = CreateClient(fake);
+
+        await client.GetAsync("/api/v1/items/R190.1012");
+
+        fake.Urls.Should().NotContain(
+            u => u.Contains("$expand", StringComparison.OrdinalIgnoreCase),
+            "SAP rejects $expand=ItemPrices; el precio se obtiene del sub-recurso Items('CODE')/ItemPrices"
+        );
+        fake.Urls.Should().Contain(
+            u => u.StartsWith("Items(", StringComparison.Ordinal) && u.Contains("/ItemPrices", StringComparison.Ordinal)
+        );
+    }
+
+    [Fact]
+    public async Task Get_Item_NeverSelectsCodeBars()
+    {
+        // Regresión directa del incidente 2026-08-07: SAP rechaza $select=CodeBars con
+        // -1000 "Property 'CodeBars' of 'Item' is invalid" — verificado en vivo. El
+        // campo real es "BarCode" (singular); "codeBars" sigue siendo el nombre de la
+        // propiedad JSON de ESTA API (contrato externo sin cambios), solo cambió qué
+        // se le pide a SAP internamente.
+        var fake = new ScriptedSapClient(DefaultResponder);
+        var client = CreateClient(fake);
+
+        await client.GetAsync("/api/v1/items/R190.1012");
+
+        fake.Urls.Should().NotContain(u => u.Contains("CodeBars", StringComparison.Ordinal));
+        fake.Urls.Should().Contain(u => u.Contains("BarCode", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -153,7 +276,8 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
         var response = await client.GetAsync("/api/v1/items/R190.1012");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        fake.Urls.Count(u => u.StartsWith("Items(", StringComparison.Ordinal))
+        // Excluye la llamada a /ItemPrices (sin $select, no forma parte del retry de UDF)
+        fake.Urls.Count(u => u.StartsWith("Items(", StringComparison.Ordinal) && u.Contains("$select", StringComparison.Ordinal))
             .Should().Be(2, "the gateway must retry the $select without the UDF");
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         body.RootElement.GetProperty("itemCode").GetString().Should().Be("R190.1012");
@@ -250,6 +374,137 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
         body.RootElement.TryGetProperty("groupName", out _).Should().BeFalse();
     }
 
+    // Estos tests ejercitan POST /api/v1/items/batch a través del SapGateway REAL
+    // (a diferencia de ItemsBatchEndpointTests.cs, que mockea ISapGateway y por lo
+    // tanto nunca ejercita la construcción real de la consulta a SAP). Es exactamente
+    // el hueco de cobertura que dejó pasar el incidente 2026-08-07: $expand=ItemPrices
+    // funcionaba contra fixtures pero SAP real lo rechazaba con -1000.
+    [Fact]
+    public async Task Post_Batch_ResolvesPvpPerItemViaIndividualCalls()
+    {
+        const string batchBaseJson = """
+            {
+                "value": [
+                    { "ItemCode": "R311.AMAZ-4-1012", "ItemName": "COLORS AMAZ", "ItemsGroupCode": 105, "Valid": "tYES", "Frozen": "tNO", "ItemType": "itItems" },
+                    { "ItemCode": "R311.SIE-20.1012", "ItemName": "COLORS SIE", "ItemsGroupCode": 105, "Valid": "tYES", "Frozen": "tNO", "ItemType": "itItems" }
+                ]
+            }
+            """;
+        const string pricesA = """{ "ItemPrices": [ { "PriceList": 1, "Price": 6.99, "Currency": "USD" } ] }""";
+        const string pricesB = """{ "ItemPrices": [ { "PriceList": 1, "Price": 3.99, "Currency": "USD" } ] }""";
+
+        var fake = new ScriptedSapClient(url =>
+            url.StartsWith("ItemGroups", StringComparison.Ordinal) ? ItemGroupsJson
+            : url.Contains("Items('R311.AMAZ-4-1012')/ItemPrices", StringComparison.Ordinal) ? pricesA
+            : url.Contains("Items('R311.SIE-20.1012')/ItemPrices", StringComparison.Ordinal) ? pricesB
+            : batchBaseJson);
+        var client = CreateClient(fake);
+
+        var response = await client.PostAsJsonAsync("/api/v1/items/batch",
+            new { itemCodes = new[] { "R311.AMAZ-4-1012", "R311.SIE-20.1012" } });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var items = body.RootElement.GetProperty("items").EnumerateArray().ToList();
+        items.Should().HaveCount(2);
+        items.Single(i => i.GetProperty("itemCode").GetString() == "R311.AMAZ-4-1012")
+            .GetProperty("pvp").GetDecimal().Should().Be(6.99m);
+        items.Single(i => i.GetProperty("itemCode").GetString() == "R311.SIE-20.1012")
+            .GetProperty("pvp").GetDecimal().Should().Be(3.99m);
+    }
+
+    [Fact]
+    public async Task Post_Batch_NeverSendsExpandItemPrices()
+    {
+        var fake = new ScriptedSapClient(DefaultResponder);
+        var client = CreateClient(fake);
+
+        await client.PostAsJsonAsync("/api/v1/items/batch", new { itemCodes = new[] { "R190.1012" } });
+
+        fake.Urls.Should().NotContain(
+            u => u.Contains("$expand", StringComparison.OrdinalIgnoreCase),
+            "SAP rejects $expand=ItemPrices even en la consulta batch; el precio se obtiene por ítem via el sub-recurso"
+        );
+    }
+
+    [Fact]
+    public async Task Batch_ItemWithWarehouseInfo_ReturnsWarehousesBreakdown()
+    {
+        const string batchJson = """
+            {
+                "value": [
+                    {
+                        "ItemCode": "R215.810.NO",
+                        "ItemName": "CASUAL LISA X1",
+                        "QuantityOnStock": 179.0,
+                        "PurchaseItem": "tYES",
+                        "SalesItem": "tYES",
+                        "InventoryItem": "tYES",
+                        "Valid": "tYES",
+                        "Frozen": "tNO",
+                        "ItemType": "itItems",
+                        "ItemsGroupCode": 105,
+                        "ItemWarehouseInfoCollection": [
+                            { "WarehouseCode": "RL-CD", "InStock": 100.0, "Committed": 10.0, "Locked": "tNO" },
+                            { "WarehouseCode": "TIENDA01", "InStock": 79.0, "Committed": 0.0, "Locked": "tYES" }
+                        ]
+                    }
+                ]
+            }
+            """;
+        var fake = new ScriptedSapClient(url =>
+            url.StartsWith("ItemGroups", StringComparison.Ordinal) ? ItemGroupsJson : batchJson);
+        var client = CreateClient(fake);
+
+        var response = await client.PostAsJsonAsync("/api/v1/items/batch", new { itemCodes = new[] { "R215.810.NO" } });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var item = body.RootElement.GetProperty("items")[0];
+        var warehouses = item.GetProperty("warehouses");
+        warehouses.GetArrayLength().Should().Be(2);
+        warehouses[0].GetProperty("warehouseCode").GetString().Should().Be("RL-CD");
+        warehouses[0].GetProperty("inStock").GetDecimal().Should().Be(100.0m);
+        warehouses[0].GetProperty("committed").GetDecimal().Should().Be(10.0m);
+        warehouses[1].GetProperty("locked").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Post_Batch_OneItemPricesCallFails_OtherItemStillResolvesPvpAndBatchSucceeds()
+    {
+        // Que SAP rechace el precio de UN ítem (mismo error real -1000 del incidente)
+        // no debe tumbar el batch completo ni afectar al resto de ítems resueltos.
+        const string batchBaseJson = """
+            {
+                "value": [
+                    { "ItemCode": "CON-PRECIO", "ItemName": "Con precio", "ItemsGroupCode": 105, "Valid": "tYES", "Frozen": "tNO", "ItemType": "itItems" },
+                    { "ItemCode": "SIN-PRECIO", "ItemName": "Sin precio", "ItemsGroupCode": 105, "Valid": "tYES", "Frozen": "tNO", "ItemType": "itItems" }
+                ]
+            }
+            """;
+        const string preciosOk = """{ "ItemPrices": [ { "PriceList": 1, "Price": 6.99, "Currency": "USD" } ] }""";
+
+        var fake = new ScriptedSapClient(url =>
+            url.StartsWith("ItemGroups", StringComparison.Ordinal) ? ItemGroupsJson
+            : url.Contains("Items('CON-PRECIO')/ItemPrices", StringComparison.Ordinal) ? preciosOk
+            : url.Contains("Items('SIN-PRECIO')/ItemPrices", StringComparison.Ordinal)
+                ? throw new SapException(HttpStatusCode.BadRequest, "Cannot expand invalid navigation property 'ItemPrices'")
+            : batchBaseJson);
+        var client = CreateClient(fake);
+
+        var response = await client.PostAsJsonAsync("/api/v1/items/batch",
+            new { itemCodes = new[] { "CON-PRECIO", "SIN-PRECIO" } });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var items = body.RootElement.GetProperty("items").EnumerateArray().ToList();
+        items.Should().HaveCount(2, "un fallo al resolver el precio de un ítem no debe tumbar el batch");
+        items.Single(i => i.GetProperty("itemCode").GetString() == "CON-PRECIO")
+            .GetProperty("pvp").GetDecimal().Should().Be(6.99m);
+        items.Single(i => i.GetProperty("itemCode").GetString() == "SIN-PRECIO")
+            .TryGetProperty("pvp", out _).Should().BeFalse();
+    }
+
     private sealed class ScriptedSapClient : ISapServiceLayerClient
     {
         private readonly Func<string, string> _responder;
@@ -259,7 +514,13 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
 
         public IReadOnlyList<string> Urls
         {
-            get { lock (_urls) { return _urls.ToList(); } }
+            get
+            {
+                lock (_urls)
+                {
+                    return _urls.ToList();
+                }
+            }
         }
 
         public Task<string> SendAsync(
@@ -269,7 +530,10 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
             string sessionToken,
             CancellationToken cancellationToken = default)
         {
-            lock (_urls) { _urls.Add(relativeUrl); }
+            lock (_urls)
+            {
+                _urls.Add(relativeUrl);
+            }
             return Task.FromResult(_responder(relativeUrl));
         }
     }

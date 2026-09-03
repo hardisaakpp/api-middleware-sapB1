@@ -13,7 +13,9 @@ public sealed record CreateStockTransferDirectRequest(
     string? U_ORIGEN,
     int? Series,
     int? PriceList,
-    IReadOnlyList<StockTransferDirectLineDto> StockTransferLines
+    IReadOnlyList<StockTransferDirectLineDto> StockTransferLines,
+    string? U_sap_id,
+    string? U_GUIA_LAAR
 );
 
 public sealed record StockTransferDirectLineDto(

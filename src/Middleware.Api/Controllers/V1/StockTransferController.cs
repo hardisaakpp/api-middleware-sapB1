@@ -158,4 +158,37 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
+
+    [HttpGet("by-correlation/{uSapId}")]
+    [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetByCorrelationId(
+    string uSapId,
+    [FromServices] GetStockTransferByCorrelationIdUseCase useCase,
+    CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(uSapId))
+        {
+            return BadRequest(new ProblemDetails { Title = "Invalid request", Detail = "uSapId is required." });
+        }
+
+        var result = await useCase.ExecuteAsync(uSapId, cancellationToken);
+
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    [HttpGet("{docEntry:int}/status")]
+    [ProducesResponseType(typeof(StockTransferStatusResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetStatus(
+    int docEntry,
+    [FromServices] GetStockTransferStatusUseCase useCase,
+    CancellationToken cancellationToken)
+    {
+        var result = await useCase.ExecuteAsync(docEntry, cancellationToken);
+        return result is null ? NotFound() : Ok(result);
+    }
+
+
 }
