@@ -471,6 +471,129 @@ actual al armar el payload hacia SAP.
 
 ---
 
+## Sincronización de stock con WEBPOS
+
+`POST /stock-transfers/based-on-document`, `/direct` y `/with-bins` (no `/requests`, que no mueve
+stock) y también `POST /goods-receipts` avisan a WEBPOS/HITELL del movimiento, **encadenado
+dentro del mismo POST** — el cliente sigue llamando una sola vez. Después de que SAP confirma la transferencia, el middleware:
+
+1. Resuelve si `fromWarehouse`/`toWarehouse` están habilitados para WEBPOS (UDF `U_WEBPOS` en
+   `Warehouses`) y a qué "negocio" pertenecen (UDF `U_NEGOCIO`). Si ninguno de los dos almacenes
+   está habilitado, no se llama a WEBPOS — es un resultado de negocio correcto, no un error.
+2. Si aplica, calcula el stock absoluto post-transferencia por ítem/almacén y llama a WEBPOS
+   (`POST {webpos}/external/inventory/{codBusiness}`).
+3. Si WEBPOS rechaza específicamente con `"El producto no existe."` (el ítem no está creado
+   todavía en esa tienda/negocio), el middleware **reintenta una sola vez, automáticamente**,
+   reenviando la misma llamada enriquecida con datos de SAP (`price` = lista de precios 1,
+   `brand` = `U_IXX_MARCA`, `code_tax` = `U_X4R_INTERKEY` del impuesto del ítem,
+   `cod_pos_barcode` = todos los códigos de barra del ítem) para que WEBPOS pueda auto-crear el
+   ítem en esa tienda. Si ese reintento también falla (o SAP no tiene datos para enriquecer),
+   se reporta como `Rejected` normal — los otros 3 rechazos de WEBPOS (parámetros incompletos,
+   tienda fuera del negocio, falta stock/ítem) nunca disparan este reintento, porque no son
+   arreglables reenviando más datos.
+4. Embebe el resultado en la respuesta bajo `webPosSync`:
+
+```json
+{
+  "docEntry": 45,
+  "docNum": 1004,
+  "webPosSync": { "status": "Synced" }
+}
+```
+
+`webPosSync.status` es uno de:
+
+| Status | Significado |
+|---|---|
+| `Synced` | WEBPOS aceptó la actualización de stock |
+| `SkippedNotPos` | Ninguno de los dos almacenes está habilitado para WEBPOS — no se llamó a WEBPOS |
+| `Rejected` | WEBPOS rechazó por una razón de negocio (`procesoCorrecto:false`, en cualquier HTTP status — WEBPOS usa tanto 200 como 400 para rechazos). `reason` trae el `mensaje` crudo de WEBPOS. **No se reintenta solo** — requiere corrección manual en WEBPOS y un reintento explícito (ver abajo) |
+| `Queued` | WEBPOS no respondió a tiempo o está saturado — se encoló como job independiente (mismo mecanismo de `docs/job-queue.md`, 5 intentos con backoff). `jobId` permite consultar `GET /jobs/{jobId}` |
+| `Error` | Cualquier otro fallo notificando a WEBPOS. La transferencia en SAP **ya quedó creada** — este campo nunca hace fallar el `201` de la transferencia |
+
+⚠️ Importante: un fallo o rechazo de WEBPOS **nunca** hace que la transferencia se reintente ni
+se re-cree en SAP — SAP y WEBPOS se tratan como dos pasos independientes con su propio ciclo de
+vida, encadenados solo para la respuesta del cliente.
+
+### POST /webpos/stock-transfers/{docEntry}/retry
+
+Reintenta **solo** la notificación a WEBPOS para una transferencia que ya existe en SAP —
+usar después de corregir manualmente en WEBPOS un rechazo (`Rejected`). Nunca vuelve a llamar a
+SAP para crear nada; relee la transferencia existente por `DocEntry` (líneas y almacenes) y
+recalcula el stock vigente en ese momento antes de reintentar. Repetible cuantas veces haga
+falta hasta que el documento llegue a `SYNCED` o `SKIPPED_NOT_POS`.
+
+**Respuesta — 200 OK**, mismo cuerpo `webPosSync` descrito arriba.
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `404 Not Found` | El `DocEntry` no existe en SAP |
+
+### POST /webpos/goods-receipts/{docEntry}/retry
+
+Igual que el retry de transferencias pero para una entrada de mercadería
+(`PurchaseDeliveryNotes`) que ya existe en SAP: relee la entrada por `DocEntry` (líneas con su
+bodega receptora), recalcula el stock vigente y re-ejecuta la notificación a WEBPOS. Mismo cuerpo
+de respuesta y mismos códigos de error.
+
+### Trazabilidad — tabla `pos_sync_status`
+
+Cada notificación (creación o retry, transferencia o entrada) deja su resultado en
+`sc_middleware.dbo.pos_sync_status`, clave `(doc_type, doc_entry)` con `doc_type` `ST`
+(transferencia) o `GR` (entrada de mercadería). Estados persistidos y su lectura de negocio:
+
+| status | Significado de negocio |
+|---|---|
+| `SYNCED` | **Integrado** — HITELL aceptó la actualización de stock |
+| `SKIPPED_NOT_POS` | **No corresponde integración** — ninguna bodega del documento está habilitada para WEBPOS |
+| `REJECTED` | **Rechazado** — HITELL rechazó (típicamente producto no creado/migrado); `reason` trae el mensaje. Corregir en HITELL y reintegrar con el endpoint retry hasta llegar a `SYNCED`/`SKIPPED_NOT_POS` |
+
+`attempts` cuenta las veces que se intentó la integración del documento. DDL en
+`sql/create_pos_sync_status.sql` (ambientes nuevos) y `sql/alter_pos_sync_status_add_doc_type.sql`
+(migración desde la versión sin `doc_type`).
+
+### GET /webpos/sync-status/{docType}/{docEntry}
+
+Estado de integración de un documento puntual. `docType`: `ST` o `GR` (case-insensitive).
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "docType": "ST",
+  "docEntry": 587039,
+  "status": "REJECTED",
+  "reason": "SKBLZ0147 (1): El producto no existe.",
+  "attempts": 2,
+  "createdAt": "2026-09-03T10:15:00",
+  "updatedAt": "2026-09-03T10:22:41"
+}
+```
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | `docType` distinto de `ST`/`GR` |
+| `404 Not Found` | El documento no tiene registro de integración |
+
+### GET /webpos/sync-status
+
+Lista estados, más reciente primero. Query params opcionales: `status`
+(`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`), `docType` (`ST` \| `GR`) y `top` (default 100,
+máx 500). Uso típico del cliente (Nexus): `?status=REJECTED` como bandeja de documentos
+pendientes de reintegración.
+
+**Respuesta — 200 OK**
+
+```json
+{ "entries": [ { "docType": "GR", "docEntry": 55, "status": "REJECTED", "...": "..." } ] }
+```
+
+---
+
 ## Entradas de Mercancía (Goods Receipts)
 
 ### POST /goods-receipts
@@ -507,9 +630,17 @@ Crea una recepción de mercancía de proveedor (`PurchaseDeliveryNotes`) en SAP.
 ```json
 {
   "docEntry": 55,
-  "docNum": 300
+  "docNum": 300,
+  "webPosSync": { "status": "Synced" }
 }
 ```
+
+Las entradas de mercadería también sincronizan stock con WEBPOS/HITELL, encadenado dentro del
+mismo POST — igual que las transferencias de stock (ver la sección "Sincronización de stock con
+WEBPOS"). La diferencia operativa: la bodega receptora viene por línea, y las lecturas SAP del
+paso WEBPOS van contra `Sap:CompanyDb` (la compañía donde se crean las entradas), no contra
+`Sap:TestCompanyDb`. `webPosSync` usa los mismos estados de esa sección y un fallo o rechazo de
+WEBPOS **nunca** hace fallar el `201` de la entrada ya creada en SAP.
 
 ---
 

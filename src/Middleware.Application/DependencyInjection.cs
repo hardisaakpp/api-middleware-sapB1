@@ -14,6 +14,8 @@ using Middleware.Application.UseCases.PurchaseOrders;
 using Middleware.Application.UseCases.StockTransfer;
 using Middleware.Application.UseCases.Validations;
 using Middleware.Application.UseCases.Warehouses;
+using Middleware.Application.UseCases.WebPos;
+using Middleware.Application.WebPos;
 
 namespace Middleware.Application;
 
@@ -22,9 +24,17 @@ public static class DependencyInjection
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         services.AddScoped<CreateStockTransferBasedOnDocumentUseCase>();
+        services.AddScoped<CreateStockTransferForCompanyUseCase>();
         services.AddScoped<CreateStockTransferDirectUseCase>();
         services.AddScoped<CreateStockTransferWithBinsUseCase>();
         services.AddScoped<CreateStockTransferRequestUseCase>();
+        services.AddScoped<NotifyWebPosStockTransferUseCase>();
+        services.AddScoped<RetryWebPosStockTransferUseCase>();
+        services.AddScoped<IWebPosStockTransferNotifier, WebPosStockTransferNotifier>();
+        services.AddScoped<NotifyWebPosGoodsReceiptUseCase>();
+        services.AddScoped<RetryWebPosGoodsReceiptUseCase>();
+        services.AddScoped<IWebPosGoodsReceiptNotifier, WebPosGoodsReceiptNotifier>();
+        services.AddScoped<GetWebPosSyncStatusUseCase>();
         services.AddScoped<GetStockTransferByCorrelationIdUseCase>();
         services.AddScoped<GetStockTransferStatusUseCase>();
 
@@ -36,8 +46,11 @@ public static class DependencyInjection
         services.AddScoped<GetPurchaseOrderUseCase>();
         services.AddScoped<GetPurchaseOrdersUseCase>();
         services.AddScoped<UpdatePurchaseOrderUseCase>();
+        services.AddScoped<UpdatePurchaseOrderStatusUseCase>();
         services.AddScoped<GetItemUseCase>();
         services.AddScoped<GetItemStockUseCase>();
+        services.AddScoped<SearchItemsUseCase>();
+        services.AddScoped<GetItemStockAllWarehousesUseCase>();
         services.AddScoped<GetItemsAvailableStockBatchUseCase>();
 
         services.AddScoped<GetItemsBatchUseCase>();
@@ -48,6 +61,8 @@ public static class DependencyInjection
         services.AddScoped<HasItemMovementsUseCase>();
         services.AddScoped<GetBusinessPartnerUseCase>();
         services.AddScoped<GetInventoryTransferRequestsByCommentUseCase>();
+        services.AddScoped<GetInventoryTransferRequestsUseCase>();
+        services.AddScoped<GetInventoryTransferRequestUseCase>();
         services.AddScoped<UpdateInventoryTransferRequestStatusUseCase>();
         services.AddScoped<ValidatePurchaseOrderUseCase>();
         services.AddScoped<GetWarehousesUseCase>();
@@ -56,9 +71,11 @@ public static class DependencyInjection
 
         services.AddScoped<IJobHandler, CreatePurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();
+        services.AddScoped<IJobHandler, UpdatePurchaseOrderStatusJobHandler>();
         services.AddScoped<IJobHandler, GetPurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, GetPurchaseOrdersJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferBasedOnDocumentJobHandler>();
+        services.AddScoped<IJobHandler, CreateStockTransferForCompanyJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferDirectJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferWithBinsJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferRequestJobHandler>();
@@ -68,12 +85,18 @@ public static class DependencyInjection
         services.AddScoped<IJobHandler, GetBusinessPartnerJobHandler>();
         services.AddScoped<IJobHandler, GetItemJobHandler>();
         services.AddScoped<IJobHandler, GetItemStockJobHandler>();
+        services.AddScoped<IJobHandler, SearchItemsJobHandler>();
+        services.AddScoped<IJobHandler, GetItemStockAllWarehousesJobHandler>();
         services.AddScoped<IJobHandler, GetItemsBatchJobHandler>();
         services.AddScoped<IJobHandler, CreateItemJobHandler>();
         services.AddScoped<IJobHandler, UpdateItemJobHandler>();
         services.AddScoped<IJobHandler, DeleteItemJobHandler>();
         services.AddScoped<IJobHandler, GetInventoryTransferRequestsByCommentJobHandler>();
+        services.AddScoped<IJobHandler, GetInventoryTransferRequestsJobHandler>();
+        services.AddScoped<IJobHandler, GetInventoryTransferRequestJobHandler>();
         services.AddScoped<IJobHandler, UpdateInventoryTransferRequestStatusJobHandler>();
+        services.AddScoped<IJobHandler, NotifyWebPosStockTransferJobHandler>();
+        services.AddScoped<IJobHandler, NotifyWebPosGoodsReceiptJobHandler>();
 
         services.AddValidatorsFromAssemblyContaining<CreateStockTransferRequestValidator>(ServiceLifetime.Scoped);
 

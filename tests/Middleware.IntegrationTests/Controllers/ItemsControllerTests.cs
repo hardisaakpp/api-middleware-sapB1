@@ -514,7 +514,13 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
 
         public IReadOnlyList<string> Urls
         {
-            get { lock (_urls) return _urls.ToList(); }
+            get
+            {
+                lock (_urls)
+                {
+                    return _urls.ToList();
+                }
+            }
         }
 
         public Task<string> SendAsync(
@@ -524,7 +530,10 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
             string sessionToken,
             CancellationToken cancellationToken = default)
         {
-            lock (_urls) _urls.Add(relativeUrl);
+            lock (_urls)
+            {
+                _urls.Add(relativeUrl);
+            }
             return Task.FromResult(_responder(relativeUrl));
         }
     }

@@ -43,4 +43,35 @@ internal static class ResiliencePolicies
             });
         });
     }
+
+    internal static IHttpResiliencePipelineBuilder AddWebPosResiliencePipeline(this IHttpClientBuilder builder)
+    {
+        return builder.AddResilienceHandler("webpos-pipeline", pipeline =>
+        {
+            pipeline.AddRetry(new HttpRetryStrategyOptions
+            {
+                MaxRetryAttempts = 3,
+                Delay = TimeSpan.FromSeconds(1),
+                BackoffType = DelayBackoffType.Exponential,
+                UseJitter = true,
+                ShouldHandle = args => ValueTask.FromResult(
+                    args.Outcome.Exception is HttpRequestException ||
+                    args.Outcome.Result?.StatusCode is >= HttpStatusCode.InternalServerError ||
+                    args.Outcome.Result?.StatusCode == HttpStatusCode.RequestTimeout)
+            });
+
+            pipeline.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
+            {
+                SamplingDuration = TimeSpan.FromSeconds(30),
+                FailureRatio = 0.5,
+                MinimumThroughput = 5,
+                BreakDuration = TimeSpan.FromSeconds(30)
+            });
+
+            pipeline.AddTimeout(new HttpTimeoutStrategyOptions
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            });
+        });
+    }
 }

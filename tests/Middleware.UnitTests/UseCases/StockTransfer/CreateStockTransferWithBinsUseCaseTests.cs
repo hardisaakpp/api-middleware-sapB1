@@ -3,18 +3,28 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
+using Middleware.Application.Dtos.Responses;
 using Middleware.Application.UseCases.StockTransfer;
+using Middleware.Domain.Enums;
 
 namespace Middleware.UnitTests.UseCases.StockTransfer;
 
 public sealed class CreateStockTransferWithBinsUseCaseTests
 {
     private readonly Mock<ISapGateway> _gatewayMock = new();
+    private readonly Mock<IWebPosStockTransferNotifier> _webPosNotifierMock = new();
     private readonly CreateStockTransferWithBinsUseCase _sut;
 
     public CreateStockTransferWithBinsUseCaseTests()
     {
-        _sut = new CreateStockTransferWithBinsUseCase(_gatewayMock.Object, NullLogger<CreateStockTransferWithBinsUseCase>.Instance);
+        _webPosNotifierMock
+            .Setup(n => n.NotifyAsync(
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<NotifyWebPosStockTransferLine>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WebPosSyncInfo(WebPosSyncStatus.Synced));
+
+        _sut = new CreateStockTransferWithBinsUseCase(
+            _gatewayMock.Object, _webPosNotifierMock.Object, NullLogger<CreateStockTransferWithBinsUseCase>.Instance);
     }
 
     [Fact]
