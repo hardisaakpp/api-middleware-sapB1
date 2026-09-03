@@ -36,7 +36,10 @@ internal sealed class WebPosGateway : IWebPosGateway
             store_stock = storeStock.Select(s => new
             {
                 sap_store_code = s.SapStoreCode,
-                stock = s.Stock,
+                // HITELL deserializes `stock` into a java.lang.Integer: a decimal like 5806.0 is rejected
+                // ("Error deserialize JSON value into type: class java.lang.Integer"), so the SAP
+                // decimal is sent as a whole number, same as the legacy ProductosMabel service does.
+                stock = ToWholeStock(s.Stock),
                 overwrite_stock = s.OverwriteStock,
                 // Only populated on the auto-create retry (WEBPOS answered "El producto no
                 // existe.") — omitted from the wire payload on a plain stock update.
@@ -70,6 +73,10 @@ internal sealed class WebPosGateway : IWebPosGateway
 
         return new WebPosUpdateOutcome(false, mensaje);
     }
+
+    // SAP stock for POS items is whole units; rounding (not truncating) keeps 4.9999 = 5.
+    private static long ToWholeStock(decimal stock) =>
+        decimal.ToInt64(Math.Round(stock, 0, MidpointRounding.AwayFromZero));
 
     private async Task<string> ExecuteWithRetryOn401Async(HttpMethod method, string resource, string payload, CancellationToken ct)
     {
