@@ -147,6 +147,43 @@ public sealed class WebPosStockTransferControllerTests : IClassFixture<WebApplic
     }
 
     [Fact]
+    public async Task Retry_SendsStockAsWholeNumber_NeverAsDecimal()
+    {
+        // HITELL binds `stock` to a java.lang.Integer and rejects "5806.0" (the shape SAP's
+        // InStock comes back with) — the wire payload must carry a whole number.
+        var sapMock = new Mock<ISapGateway>();
+        sapMock
+            .Setup(g => g.GetStockTransferForTestCompanyAsync(42, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StockTransferDocumentResponse(42, 1001, "WH01", "WH02",
+                [new StockTransferDocumentLine("ITEM001", 1m, "WH02")]));
+        sapMock
+            .Setup(g => g.GetWarehousesPosInfoForTestCompanyAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, WarehousePosInfo>
+            {
+                ["WH02"] = new WarehousePosInfo("WH02", IsPosEnabled: true, CodBusiness: "1")
+            });
+        sapMock
+            .Setup(g => g.GetItemStockForTestCompanyAsync("ITEM001", "WH02", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ItemStockResponse("ITEM001", "WH02", 5806.0m, 0m, "UNIDAD", false));
+
+        var client = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services => Replace<ISapGateway>(services, _ => sapMock.Object));
+        }).CreateClient();
+
+        _fakeWebPosClient.NextResponses.Enqueue((
+            """{"procesoCorrecto":true,"error":0,"mensaje":null,"retorno":null}""",
+            HttpStatusCode.OK));
+
+        var response = await client.PostAsync("/api/v1/webpos/stock-transfers/42/retry", content: null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var requestBody = _fakeWebPosClient.CapturedRequestBodies.Single();
+        requestBody.Should().Contain("\"stock\":5806,");
+        requestBody.Should().NotContain("5806.0");
+    }
+
+    [Fact]
     public async Task Retry_WebPosAnswers200WithProcesoCorrectoTrue_IsTreatedAsSynced()
     {
         _fakeWebPosClient.NextResponses.Enqueue((
