@@ -12,11 +12,13 @@ namespace Middleware.IntegrationTests.Infrastructure;
 internal sealed class FakeWebPosClient : IWebPosClient
 {
     public ConcurrentQueue<(string Body, HttpStatusCode StatusCode)> NextResponses { get; } = new();
+    public ConcurrentQueue<string> CapturedRequestBodies { get; } = new();
     public int CallCount { get; private set; }
 
     public Task<string> SendAsync(HttpMethod method, string relativeUrl, string body, string token, CancellationToken ct = default)
     {
         CallCount++;
+        CapturedRequestBodies.Enqueue(body);
 
         if (!NextResponses.TryDequeue(out var response))
         {

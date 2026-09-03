@@ -25,3 +25,11 @@ public sealed record ItemStockResponse(
     string? UomCode,
     bool Locked
 );
+
+/// <summary>Resultado de búsqueda de ítems por ItemCode o BarCode (contains, no exacto) — para P-012 de api-cedi ("Consulta Stock").</summary>
+public sealed record ItemSearchResult(
+    string ItemCode,
+    string ItemName,
+    string? BarCode,
+    string? InventoryUoM
+);

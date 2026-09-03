@@ -17,6 +17,18 @@ public interface IWebPosGateway
         CancellationToken ct = default);
 }
 
-public sealed record WebPosStoreStock(string SapStoreCode, decimal Stock, bool OverwriteStock = true);
+/// <summary>
+/// Price/Brand/CodeTax/Barcodes are only populated on the auto-create retry, when WEBPOS answers
+/// "El producto no existe." — a plain stock update never sends them (they're omitted from the
+/// wire payload when null, keeping the normal-path request minimal).
+/// </summary>
+public sealed record WebPosStoreStock(
+    string SapStoreCode,
+    decimal Stock,
+    bool OverwriteStock = true,
+    string? Price = null,
+    string? Brand = null,
+    string? CodeTax = null,
+    IReadOnlyList<string>? Barcodes = null);
 
 public sealed record WebPosUpdateOutcome(bool Success, string? RejectionReason = null);

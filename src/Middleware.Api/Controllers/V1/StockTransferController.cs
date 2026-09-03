@@ -23,6 +23,38 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         _jobCoordinator = jobCoordinator;
     }
 
+    /// <summary>
+    /// Igual que /based-on-document pero corre contra Sap:CompanyDb (la compañía real, no el
+    /// sandbox de WebPOS al que apuntan /based-on-document, /direct y /with-bins) — para
+    /// transferencias de bodega ajenas a WebPOS, ej. Distribución de api-cedi (P-011). No
+    /// dispara la notificación WebPOS.
+    /// </summary>
+    [HttpPost]
+    [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Create(
+        [FromBody] CreateStockTransferBasedOnDocumentRequest request,
+        CancellationToken cancellationToken)
+    {
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "CreateStockTransferForCompany",
+            "POST /api/v1/stock-transfers",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<CreateStockTransferForCompanyUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.Created,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<StockTransferResponse> c => CreatedAtAction(nameof(Create), c.Response),
+            JobQueued<StockTransferResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
     [HttpPost("based-on-document")]
     [ProducesResponseType(typeof(StockTransferResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]

@@ -37,7 +37,13 @@ internal sealed class WebPosGateway : IWebPosGateway
             {
                 sap_store_code = s.SapStoreCode,
                 stock = s.Stock,
-                overwrite_stock = s.OverwriteStock
+                overwrite_stock = s.OverwriteStock,
+                // Only populated on the auto-create retry (WEBPOS answered "El producto no
+                // existe.") — omitted from the wire payload on a plain stock update.
+                price = s.Price,
+                brand = s.Brand,
+                code_tax = s.CodeTax,
+                cod_pos_barcode = s.Barcodes is { Count: > 0 } ? s.Barcodes : null
             })
         }, JsonOptions);
 

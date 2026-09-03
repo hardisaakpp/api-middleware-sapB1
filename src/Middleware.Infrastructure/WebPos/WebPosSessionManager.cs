@@ -94,9 +94,12 @@ internal sealed class WebPosSessionManager : IWebPosSessionManager
 
         _token = tokenEl.GetString();
 
+        // Confirmed live against the real WEBPOS test server: expiration_token is in
+        // MILLISECONDS (e.g. 720000000 ms ≈ 8.3 days) — as seconds that would be ~22.8 years,
+        // which would never trigger a proactive refresh.
         var expirationSeconds = retorno.TryGetProperty("expiration_token", out var expEl) &&
-            expEl.TryGetInt32(out var exp) && exp > 0
-                ? exp
+            expEl.TryGetInt64(out var expMs) && expMs > 0
+                ? expMs / 1000d
                 : 25 * 60;
 
         // Refresh a bit before the real expiry so a request never races an about-to-expire token.

@@ -45,7 +45,7 @@ public sealed class NotifyWebPosStockTransferUseCaseTests
         _webPosGatewayMock.Verify(
             g => g.UpdateInventoryAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()),
             Times.Never);
-        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync(42, "SKIPPED_NOT_POS", null, It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, "SKIPPED_NOT_POS", null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public sealed class NotifyWebPosStockTransferUseCaseTests
                     s.Any(x => x.SapStoreCode == "WH02" && x.Stock == 7m)),
                 It.IsAny<CancellationToken>()),
             Times.Once);
-        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync(42, "SYNCED", null, It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, "SYNCED", null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -135,7 +135,110 @@ public sealed class NotifyWebPosStockTransferUseCaseTests
         result.Status.Should().Be(WebPosSyncStatus.Rejected);
         result.Reason.Should().Contain("El producto no existe.");
         _posSyncStatusRepositoryMock.Verify(
-            r => r.UpsertAsync(42, "REJECTED", It.Is<string>(reason => reason!.Contains("El producto no existe.")), It.IsAny<CancellationToken>()),
+            r => r.UpsertAsync("ST", 42, "REJECTED", It.Is<string>(reason => reason!.Contains("El producto no existe.")), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WebPosRejectsProductNotFound_RetriesOnceWithEnrichmentAndSucceeds()
+    {
+        _sapGatewayMock
+            .Setup(g => g.GetWarehousesPosInfoForTestCompanyAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, WarehousePosInfo>
+            {
+                ["WH01"] = new WarehousePosInfo("WH01", IsPosEnabled: true, CodBusiness: "1"),
+                ["WH02"] = new WarehousePosInfo("WH02", IsPosEnabled: true, CodBusiness: "1")
+            });
+
+        _sapGatewayMock
+            .Setup(g => g.GetItemStockForTestCompanyAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ItemStockResponse("ITEM001", "WH01", 5m, 0m, "UNIDAD", false));
+
+        _sapGatewayMock
+            .Setup(g => g.GetItemPosEnrichmentForTestCompanyAsync("ITEM001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ItemPosEnrichment("10.270", "rolando", "1", ["786137983", "786137984"]));
+
+        var calls = 0;
+        _webPosGatewayMock
+            .Setup(g => g.UpdateInventoryAsync("1", "ITEM001", It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string _, IReadOnlyList<WebPosStoreStock> stock, CancellationToken _) =>
+            {
+                calls++;
+                if (calls == 1)
+                {
+                    stock.Should().OnlyContain(s => s.Price == null && s.Brand == null && s.CodeTax == null && s.Barcodes == null);
+                    return new WebPosUpdateOutcome(false, "El producto no existe.");
+                }
+
+                stock.Should().OnlyContain(s => s.Price == "10.270" && s.Brand == "rolando" && s.CodeTax == "1");
+                stock.Should().OnlyContain(s => s.Barcodes!.SequenceEqual(new[] { "786137983", "786137984" }));
+                return new WebPosUpdateOutcome(true);
+            });
+
+        var result = await _sut.ExecuteAsync(Request());
+
+        result.Status.Should().Be(WebPosSyncStatus.Synced);
+        calls.Should().Be(2);
+        _sapGatewayMock.Verify(g => g.GetItemPosEnrichmentForTestCompanyAsync("ITEM001", It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, "SYNCED", null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WebPosRejectsProductNotFound_EnrichmentRetryAlsoFails_ReturnsRejected()
+    {
+        _sapGatewayMock
+            .Setup(g => g.GetWarehousesPosInfoForTestCompanyAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, WarehousePosInfo>
+            {
+                ["WH01"] = new WarehousePosInfo("WH01", IsPosEnabled: true, CodBusiness: "1"),
+                ["WH02"] = new WarehousePosInfo("WH02", IsPosEnabled: true, CodBusiness: "1")
+            });
+
+        _sapGatewayMock
+            .Setup(g => g.GetItemStockForTestCompanyAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ItemStockResponse("ITEM001", "WH01", 5m, 0m, "UNIDAD", false));
+
+        _sapGatewayMock
+            .Setup(g => g.GetItemPosEnrichmentForTestCompanyAsync("ITEM001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ItemPosEnrichment(null, null, null, []));
+
+        _webPosGatewayMock
+            .Setup(g => g.UpdateInventoryAsync("1", "ITEM001", It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WebPosUpdateOutcome(false, "El producto no existe."));
+
+        var result = await _sut.ExecuteAsync(Request());
+
+        result.Status.Should().Be(WebPosSyncStatus.Rejected);
+        _webPosGatewayMock.Verify(
+            g => g.UpdateInventoryAsync("1", "ITEM001", It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WebPosRejectsForAnyOtherReason_NeverCallsEnrichment()
+    {
+        _sapGatewayMock
+            .Setup(g => g.GetWarehousesPosInfoForTestCompanyAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, WarehousePosInfo>
+            {
+                ["WH01"] = new WarehousePosInfo("WH01", IsPosEnabled: true, CodBusiness: "1"),
+                ["WH02"] = new WarehousePosInfo("WH02", IsPosEnabled: true, CodBusiness: "1")
+            });
+
+        _sapGatewayMock
+            .Setup(g => g.GetItemStockForTestCompanyAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ItemStockResponse("ITEM001", "WH01", 5m, 0m, "UNIDAD", false));
+
+        _webPosGatewayMock
+            .Setup(g => g.UpdateInventoryAsync("1", "ITEM001", It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WebPosUpdateOutcome(false, "La tienda no pertenece al negocio."));
+
+        var result = await _sut.ExecuteAsync(Request());
+
+        result.Status.Should().Be(WebPosSyncStatus.Rejected);
+        _sapGatewayMock.Verify(g => g.GetItemPosEnrichmentForTestCompanyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _webPosGatewayMock.Verify(
+            g => g.UpdateInventoryAsync("1", "ITEM001", It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 }
