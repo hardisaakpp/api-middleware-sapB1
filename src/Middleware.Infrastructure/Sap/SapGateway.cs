@@ -1718,8 +1718,12 @@ internal sealed class SapGateway : ISapGateway
         try
         {
             var encoded = Uri.EscapeDataString(taxCode);
+            // No $select here: Service Layer answers "Property 'U_X4R_INTERKEY' of 'SalesTaxCodes' is
+            // invalid" when a UDF of this entity is projected, even though the UDF comes back fine
+            // on the full entity (confirmed live against TEST_MABEL, IVA_15 -> "3"). With the
+            // $select every lookup failed and code_tax was always null on the WEBPOS auto-create.
             var json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"SalesTaxCodes('{encoded}')?$select=Code,U_X4R_INTERKEY",
+                $"SalesTaxCodes('{encoded}')",
                 null, companyDb, password, ct);
 
             using var doc = JsonDocument.Parse(json);
