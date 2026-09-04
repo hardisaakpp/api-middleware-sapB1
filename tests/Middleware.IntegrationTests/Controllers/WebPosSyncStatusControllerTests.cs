@@ -1,0 +1,119 @@
+using System.Net;
+using System.Net.Http.Json;
+using FluentAssertions;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Middleware.Application.Abstractions;
+using Middleware.Application.Dtos.Responses;
+using Middleware.IntegrationTests.Infrastructure;
+
+namespace Middleware.IntegrationTests.Controllers;
+
+/// <summary>
+/// The sync-status endpoints are what Nexus uses to tell the user whether a document reached
+/// HITELL and, when it didn't, whether the fix is "create the product in HITELL" — so the
+/// interpretation (result / rejection) must come ready-made from the API.
+/// </summary>
+public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicationFactory<Program>>
+{
+    private readonly WebApplicationFactory<Program> _factory;
+    private readonly InMemoryPosSyncStatusRepository _repository = new();
+
+    public WebPosSyncStatusControllerTests(WebApplicationFactory<Program> factory)
+    {
+        _factory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IPosSyncStatusRepository));
+                if (descriptor is not null)
+                {
+                    services.Remove(descriptor);
+                }
+
+                services.AddScoped<IPosSyncStatusRepository>(_ => _repository);
+            });
+        });
+    }
+
+    private async Task SeedAsync()
+    {
+        await _repository.UpsertAsync("ST", 587061, "SYNCED", null);
+        await _repository.UpsertAsync("ST", 587065, "REJECTED", "LIMP0027 (1): No entity found for query");
+        await _repository.UpsertAsync("GR", 900, "REJECTED", "SKBLZ0147 (1): El producto no existe.");
+        await _repository.UpsertAsync("ST", 587070, "REJECTED", "ACHOME001 (1): La tienda no pertenece al negocio");
+        await _repository.UpsertAsync("ST", 587080, "SKIPPED_NOT_POS", null);
+    }
+
+    [Fact]
+    public async Task Get_RejectedForMissingProduct_ReturnsProductNotFoundRejectionWithRetryEndpoint()
+    {
+        await SeedAsync();
+        var client = _factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/webpos/sync-status/st/587065");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<WebPosSyncStatusResponse>();
+        body!.Result.Should().Be("RECHAZADO");
+        body.Status.Should().Be("REJECTED");
+        body.Rejection.Should().NotBeNull();
+        body.Rejection!.Type.Should().Be("PRODUCTO_NO_EXISTE");
+        body.Rejection.Description.Should().Contain("LIMP0027");
+        body.Rejection.Items.Should().ContainSingle(i => i.ItemCode == "LIMP0027" && i.CodBusiness == "1" && i.Type == "PRODUCTO_NO_EXISTE");
+        body.Rejection.RetryEndpoint.Should().Be("/api/v1/webpos/stock-transfers/587065/retry");
+    }
+
+    [Fact]
+    public async Task Get_SyncedAndSkipped_HaveBusinessResultAndNoRejection()
+    {
+        await SeedAsync();
+        var client = _factory.CreateClient();
+
+        var synced = await client.GetFromJsonAsync<WebPosSyncStatusResponse>("/api/v1/webpos/sync-status/ST/587061");
+        synced!.Result.Should().Be("INTEGRADO");
+        synced.Rejection.Should().BeNull();
+
+        var skipped = await client.GetFromJsonAsync<WebPosSyncStatusResponse>("/api/v1/webpos/sync-status/ST/587080");
+        skipped!.Result.Should().Be("NO_CORRESPONDE");
+        skipped.Rejection.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Get_GoodsReceiptRejection_PointsToGoodsReceiptRetry()
+    {
+        await SeedAsync();
+        var client = _factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<WebPosSyncStatusResponse>("/api/v1/webpos/sync-status/GR/900");
+
+        body!.Rejection!.Type.Should().Be("PRODUCTO_NO_EXISTE");
+        body.Rejection.RetryEndpoint.Should().Be("/api/v1/webpos/goods-receipts/900/retry");
+    }
+
+    [Fact]
+    public async Task List_FilterByRejectionType_ReturnsOnlyMissingProducts()
+    {
+        await SeedAsync();
+        var client = _factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/webpos/sync-status?rejectionType=PRODUCTO_NO_EXISTE");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<ListResponse>();
+        body!.Entries.Select(e => e.DocEntry).Should().BeEquivalentTo([587065, 900]);
+        body.Entries.Should().OnlyContain(e => e.Result == "RECHAZADO" && e.Rejection!.Type == "PRODUCTO_NO_EXISTE");
+    }
+
+    [Fact]
+    public async Task List_InvalidRejectionType_Returns400()
+    {
+        var client = _factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/webpos/sync-status?rejectionType=LO_QUE_SEA");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    private sealed record ListResponse(IReadOnlyList<WebPosSyncStatusResponse> Entries);
+}
