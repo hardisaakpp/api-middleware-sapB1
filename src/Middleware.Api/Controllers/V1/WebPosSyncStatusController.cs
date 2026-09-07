@@ -46,11 +46,10 @@ public sealed class WebPosSyncStatusController : ControllerBase
     }
 
     /// <summary>
-    /// Lista estados, más reciente primero. Filtros opcionales: status (SYNCED | REJECTED |
+    /// Listado paginado, más reciente primero. Filtros opcionales: status (SYNCED | REJECTED |
     /// SKIPPED_NOT_POS), docType (ST | GR), rejectionType (PRODUCTO_NO_EXISTE | OTRO, implica
-    /// status=REJECTED) y docEntry (búsqueda puntual desde la pantalla de soporte). Uso típico:
-    /// ?rejectionType=PRODUCTO_NO_EXISTE para la lista de productos que hay que crear en HITELL
-    /// antes de reintegrar.
+    /// status=REJECTED), docNum / docEntry (búsqueda puntual) y from / to (sobre la última
+    /// actualización). page (default 1) y pageSize (default 20, máx 200).
     /// </summary>
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -60,10 +59,24 @@ public sealed class WebPosSyncStatusController : ControllerBase
         [FromQuery] string? docType,
         [FromQuery] string? rejectionType,
         [FromQuery] int? docEntry,
-        [FromQuery] int top = 100,
+        [FromQuery] int? docNum,
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
-        var entries = await _useCase.ListAsync(status, docType, rejectionType, docEntry, top, cancellationToken);
-        return Ok(new { entries });
+        var result = await _useCase.ListAsync(
+            new WebPosSyncStatusQuery(status, docType, rejectionType, docEntry, docNum, from, to, page, pageSize),
+            cancellationToken);
+
+        return Ok(new
+        {
+            entries = result.Items,
+            total = result.Total,
+            page = result.Page,
+            pageSize = result.PageSize,
+            totalPages = result.TotalPages
+        });
     }
 }

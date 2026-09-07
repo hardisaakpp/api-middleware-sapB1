@@ -628,9 +628,14 @@ Cada notificación (creación o retry, transferencia o entrada) deja su resultad
 | `SKIPPED_NOT_POS` | **No corresponde integración** — ninguna bodega del documento está habilitada para WEBPOS |
 | `REJECTED` | **Rechazado** — HITELL rechazó (típicamente producto no creado/migrado); `reason` trae el mensaje. Corregir en HITELL y reintegrar con el endpoint retry hasta llegar a `SYNCED`/`SKIPPED_NOT_POS` |
 
-`attempts` cuenta las veces que se intentó la integración del documento. DDL en
-`sql/create_pos_sync_status.sql` (ambientes nuevos) y `sql/alter_pos_sync_status_add_doc_type.sql`
-(migración desde la versión sin `doc_type`).
+`attempts` cuenta las veces que se intentó la integración del documento; `doc_num` es el número
+visible del documento en SAP. DDL en `sql/create_pos_sync_status.sql` (ambientes nuevos),
+`sql/alter_pos_sync_status_add_doc_type.sql` (migración desde la versión sin `doc_type`) y
+`sql/alter_pos_sync_status_add_doc_num.sql` (migración desde la versión sin `doc_num`).
+
+⚠️ Verificado el 2026-09-07: en la base de producción (`sc_middleware` en 192.168.2.211) la tabla
+**no existía** — el paso a producción de HITELL no corrió el script. Hasta crearla, los estados de
+integración no se guardan y `GET /webpos/sync-status` responde 500.
 
 ### GET /webpos/sync-status/{docType}/{docEntry}
 
@@ -684,22 +689,34 @@ invocar `rejection.retryEndpoint` y volver a consultar hasta que `result` sea `I
 
 ### GET /webpos/sync-status
 
-Lista estados con la misma forma que el endpoint puntual, más reciente primero. Query params
-opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`), `docType` (`ST` \| `GR`),
-`rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica `status=REJECTED`), `docEntry` (búsqueda
-puntual de un documento) y `top` (default 100, máx 500).
+Listado **paginado** con la misma forma que el endpoint puntual, más reciente primero (por última
+actualización). Query params opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`),
+`docType` (`ST` \| `GR`), `rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica
+`status=REJECTED`), `docNum` (número de documento SAP, lo que ve el usuario), `docEntry`,
+`from` / `to` (sobre la última actualización, inclusivos), `page` (default 1) y `pageSize`
+(default 20, máx 200).
 
-Usos típicos del cliente (Nexus, módulo Integraciones → pestaña HITELL):
+Usos típicos del cliente (Nexus, módulo Integraciones → pestaña HITELL, que por defecto pide los
+últimos 15 días):
 
-- `?status=REJECTED` — bandeja de documentos pendientes de reintegración; el botón "Reintegrar" llama a `rejection.retryEndpoint`.
-- `?rejectionType=PRODUCTO_NO_EXISTE` — qué productos hay que crear en HITELL; `rejection.items[].itemCode` da el listado.
-- `?docEntry=587065` — buscar un documento concreto sin conocer su tipo.
+- `?status=REJECTED&from=...&to=...` — bandeja de documentos pendientes de reintegración; el botón "Reintegrar" llama a `rejection.retryEndpoint`.
+- `?rejectionType=PRODUCTO_NO_EXISTE` — qué productos hay que crear en HITELL; `rejection.items[].itemCode` da el listado. Como el tipo de rechazo se deduce del texto de HITELL, este filtro se resuelve en memoria sobre los rechazados del rango (máx. 2000).
+- `?docNum=1065` — buscar un documento por su número SAP sin conocer su tipo.
 
 **Respuesta — 200 OK**
 
 ```json
-{ "entries": [ { "docType": "ST", "docEntry": 587065, "status": "REJECTED", "result": "RECHAZADO", "rejection": { "type": "PRODUCTO_NO_EXISTE", "...": "..." } } ] }
+{
+  "entries": [ { "docType": "ST", "docEntry": 587065, "docNum": 1065, "status": "REJECTED", "result": "RECHAZADO", "rejection": { "type": "PRODUCTO_NO_EXISTE", "...": "..." } } ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
 ```
+
+`docNum` se guarda desde esta versión (columna `doc_num`, ver `sql/alter_pos_sync_status_add_doc_num.sql`
+para ambientes donde la tabla ya existía); las filas anteriores lo traen `null` hasta su próximo reintento.
 
 ---
 

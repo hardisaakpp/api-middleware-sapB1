@@ -13,6 +13,14 @@ namespace Middleware.Application.UseCases.WebPos;
 /// </summary>
 public sealed class GetWebPosSyncStatusUseCase
 {
+    public const int MaxPageSize = 200;
+
+    /// <summary>
+    /// El tipo de rechazo se deduce del texto de HITELL, no está en una columna: para filtrar por él
+    /// se traen los rechazados del rango (acotado) y se pagina en memoria.
+    /// </summary>
+    private const int MaxRejectedScanned = 2000;
+
     private static readonly string[] ValidDocTypes = [PosSyncDocTypes.StockTransfer, PosSyncDocTypes.GoodsReceipt];
     private static readonly string[] ValidStatuses = ["SYNCED", "REJECTED", "SKIPPED_NOT_POS"];
     private static readonly string[] ValidRejectionTypes = [WebPosRejectionTypes.ProductNotFound, WebPosRejectionTypes.Other];
@@ -33,39 +41,51 @@ public sealed class GetWebPosSyncStatusUseCase
         return entry is null ? null : ToResponse(entry);
     }
 
-    public async Task<IReadOnlyList<WebPosSyncStatusResponse>> ListAsync(
-        string? status, string? docType, string? rejectionType, int? docEntry, int top, CancellationToken ct = default)
+    public async Task<PagedResult<WebPosSyncStatusResponse>> ListAsync(
+        WebPosSyncStatusQuery query, CancellationToken ct = default)
     {
         string? normalizedType = null;
-        if (!string.IsNullOrWhiteSpace(docType))
+        if (!string.IsNullOrWhiteSpace(query.DocType))
         {
-            normalizedType = NormalizeDocType(docType)
-                ?? throw new ArgumentException($"docType inválido: '{docType}'. Valores aceptados: ST, GR.");
+            normalizedType = NormalizeDocType(query.DocType)
+                ?? throw new ArgumentException($"docType inválido: '{query.DocType}'. Valores aceptados: ST, GR.");
         }
 
         string? normalizedStatus = null;
-        if (!string.IsNullOrWhiteSpace(status))
+        if (!string.IsNullOrWhiteSpace(query.Status))
         {
-            normalizedStatus = Array.Find(ValidStatuses, s => s.Equals(status.Trim(), StringComparison.OrdinalIgnoreCase))
-                ?? throw new ArgumentException($"status inválido: '{status}'. Valores aceptados: SYNCED, REJECTED, SKIPPED_NOT_POS.");
+            normalizedStatus = Array.Find(ValidStatuses, s => s.Equals(query.Status.Trim(), StringComparison.OrdinalIgnoreCase))
+                ?? throw new ArgumentException($"status inválido: '{query.Status}'. Valores aceptados: SYNCED, REJECTED, SKIPPED_NOT_POS.");
         }
 
         string? normalizedRejectionType = null;
-        if (!string.IsNullOrWhiteSpace(rejectionType))
+        if (!string.IsNullOrWhiteSpace(query.RejectionType))
         {
-            normalizedRejectionType = Array.Find(ValidRejectionTypes, t => t.Equals(rejectionType.Trim(), StringComparison.OrdinalIgnoreCase))
-                ?? throw new ArgumentException($"rejectionType inválido: '{rejectionType}'. Valores aceptados: PRODUCTO_NO_EXISTE, OTRO.");
+            normalizedRejectionType = Array.Find(ValidRejectionTypes, t => t.Equals(query.RejectionType.Trim(), StringComparison.OrdinalIgnoreCase))
+                ?? throw new ArgumentException($"rejectionType inválido: '{query.RejectionType}'. Valores aceptados: PRODUCTO_NO_EXISTE, OTRO.");
             // A rejection type only makes sense over rejected rows.
             normalizedStatus = "REJECTED";
         }
 
-        var boundedTop = Math.Clamp(top, 1, 500);
-        var entries = await _repository.ListAsync(normalizedStatus, normalizedType, docEntry, boundedTop, ct);
+        var page = Math.Max(query.Page, 1);
+        var pageSize = Math.Clamp(query.PageSize, 1, MaxPageSize);
 
-        return entries
+        if (normalizedRejectionType is null)
+        {
+            var result = await _repository.ListAsync(
+                new PosSyncStatusFilter(normalizedStatus, normalizedType, query.DocEntry, query.DocNum, query.From, query.To, page, pageSize), ct);
+            return new PagedResult<WebPosSyncStatusResponse>(result.Items.Select(ToResponse).ToList(), result.Total, page, pageSize);
+        }
+
+        var rejected = await _repository.ListAsync(
+            new PosSyncStatusFilter(normalizedStatus, normalizedType, query.DocEntry, query.DocNum, query.From, query.To, 1, MaxRejectedScanned), ct);
+        var matching = rejected.Items
             .Select(ToResponse)
-            .Where(r => normalizedRejectionType is null || r.Rejection?.Type == normalizedRejectionType)
+            .Where(r => r.Rejection?.Type == normalizedRejectionType)
             .ToList();
+
+        return new PagedResult<WebPosSyncStatusResponse>(
+            matching.Skip((page - 1) * pageSize).Take(pageSize).ToList(), matching.Count, page, pageSize);
     }
 
     private static string? NormalizeDocType(string docType) =>
@@ -83,7 +103,7 @@ public sealed class GetWebPosSyncStatusUseCase
         var rejection = result == WebPosIntegrationResults.Rejected ? BuildRejection(entry) : null;
 
         return new WebPosSyncStatusResponse(
-            entry.DocType, entry.DocEntry, entry.Status, result, entry.Reason,
+            entry.DocType, entry.DocEntry, entry.DocNum, entry.Status, result, entry.Reason,
             entry.Attempts, entry.CreatedAt, entry.UpdatedAt, rejection);
     }
 
@@ -100,3 +120,15 @@ public sealed class GetWebPosSyncStatusUseCase
         return new WebPosRejectionDetail(type, description, items, $"/api/v1/webpos/{resource}/{entry.DocEntry}/retry");
     }
 }
+
+/// <summary>Parámetros del listado GET /webpos/sync-status, tal como llegan del cliente (sin validar).</summary>
+public sealed record WebPosSyncStatusQuery(
+    string? Status,
+    string? DocType,
+    string? RejectionType,
+    int? DocEntry,
+    int? DocNum,
+    DateTime? From,
+    DateTime? To,
+    int Page,
+    int PageSize);

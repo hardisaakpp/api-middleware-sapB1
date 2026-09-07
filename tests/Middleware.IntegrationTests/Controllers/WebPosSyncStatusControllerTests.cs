@@ -38,11 +38,11 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
 
     private async Task SeedAsync()
     {
-        await _repository.UpsertAsync("ST", 587061, "SYNCED", null);
-        await _repository.UpsertAsync("ST", 587065, "REJECTED", "LIMP0027 (1): No entity found for query");
-        await _repository.UpsertAsync("GR", 900, "REJECTED", "SKBLZ0147 (1): El producto no existe.");
-        await _repository.UpsertAsync("ST", 587070, "REJECTED", "ACHOME001 (1): La tienda no pertenece al negocio");
-        await _repository.UpsertAsync("ST", 587080, "SKIPPED_NOT_POS", null);
+        await _repository.UpsertAsync("ST", 587061, 1061, "SYNCED", null);
+        await _repository.UpsertAsync("ST", 587065, 1065, "REJECTED", "LIMP0027 (1): No entity found for query");
+        await _repository.UpsertAsync("GR", 900, 5900, "REJECTED", "SKBLZ0147 (1): El producto no existe.");
+        await _repository.UpsertAsync("ST", 587070, 1070, "REJECTED", "ACHOME001 (1): La tienda no pertenece al negocio");
+        await _repository.UpsertAsync("ST", 587080, 1080, "SKIPPED_NOT_POS", null);
     }
 
     [Fact]
@@ -57,6 +57,7 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
         var body = await response.Content.ReadFromJsonAsync<WebPosSyncStatusResponse>();
         body!.Result.Should().Be("RECHAZADO");
         body.Status.Should().Be("REJECTED");
+        body.DocNum.Should().Be(1065);
         body.Rejection.Should().NotBeNull();
         body.Rejection!.Type.Should().Be("PRODUCTO_NO_EXISTE");
         body.Rejection.Description.Should().Contain("LIMP0027");
@@ -92,28 +93,42 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
     }
 
     [Fact]
-    public async Task List_FilterByRejectionType_ReturnsOnlyMissingProducts()
+    public async Task List_FilterByRejectionType_ReturnsOnlyMissingProductsWithPaging()
     {
         await SeedAsync();
         var client = _factory.CreateClient();
 
-        var response = await client.GetAsync("/api/v1/webpos/sync-status?rejectionType=PRODUCTO_NO_EXISTE");
+        var response = await client.GetAsync("/api/v1/webpos/sync-status?rejectionType=PRODUCTO_NO_EXISTE&pageSize=1");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await response.Content.ReadFromJsonAsync<ListResponse>();
-        body!.Entries.Select(e => e.DocEntry).Should().BeEquivalentTo([587065, 900]);
-        body.Entries.Should().OnlyContain(e => e.Result == "RECHAZADO" && e.Rejection!.Type == "PRODUCTO_NO_EXISTE");
+        body!.Total.Should().Be(2);
+        body.TotalPages.Should().Be(2);
+        body.Entries.Should().ContainSingle()
+            .Which.Should().Match<WebPosSyncStatusResponse>(e => e.Result == "RECHAZADO" && e.Rejection!.Type == "PRODUCTO_NO_EXISTE");
     }
 
     [Fact]
-    public async Task List_FilterByDocEntry_ReturnsThatDocumentAcrossTypes()
+    public async Task List_FilterByDocNum_ReturnsThatDocument()
     {
         await SeedAsync();
         var client = _factory.CreateClient();
 
-        var body = await client.GetFromJsonAsync<ListResponse>("/api/v1/webpos/sync-status?docEntry=900");
+        var body = await client.GetFromJsonAsync<ListResponse>("/api/v1/webpos/sync-status?docNum=5900");
 
-        body!.Entries.Should().ContainSingle(e => e.DocType == "GR" && e.DocEntry == 900);
+        body!.Entries.Should().ContainSingle(e => e.DocType == "GR" && e.DocEntry == 900 && e.DocNum == 5900);
+    }
+
+    [Fact]
+    public async Task List_DateRangeExcludingEverything_ReturnsEmptyPage()
+    {
+        await SeedAsync();
+        var client = _factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<ListResponse>("/api/v1/webpos/sync-status?from=2000-01-01&to=2000-01-31");
+
+        body!.Total.Should().Be(0);
+        body.Entries.Should().BeEmpty();
     }
 
     [Fact]
@@ -126,5 +141,5 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
-    private sealed record ListResponse(IReadOnlyList<WebPosSyncStatusResponse> Entries);
+    private sealed record ListResponse(IReadOnlyList<WebPosSyncStatusResponse> Entries, int Total, int Page, int PageSize, int TotalPages);
 }
