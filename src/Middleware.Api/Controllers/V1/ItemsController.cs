@@ -137,6 +137,42 @@ public sealed class ItemsController : ControllerBase // NOSONAR
         }
     }
 
+    /// <summary>
+    /// Busca ítems por ItemCode o BarCode (contains, no exacto) — para P-012 de api-cedi
+    /// ("Consulta Stock"). Ruta separada de GET /{itemCode} para no confundir "buscar" con
+    /// "traer por clave exacta".
+    /// </summary>
+    [HttpGet("search")]
+    [ProducesResponseType(typeof(IReadOnlyList<ItemSearchResult>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Search(
+        [FromQuery] string query, [FromQuery] int top = 20, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return BadRequest(new ProblemDetails { Title = "Invalid request", Detail = "query is required." });
+        }
+
+        top = Math.Clamp(top, 1, 100);
+        var payloadJson = JsonSerializer.Serialize(new SearchItemsJobRequest(query, top));
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "SearchItems",
+            $"GET /api/v1/items/search?query={query}&top={top}",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<SearchItemsUseCase>().ExecuteAsync(query, top, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<IReadOnlyList<ItemSearchResult>> c => Ok(c.Response),
+            JobQueued<IReadOnlyList<ItemSearchResult>> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
     [HttpGet("{itemCode}")]
     [ProducesResponseType(typeof(ItemResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
@@ -157,6 +193,35 @@ public sealed class ItemsController : ControllerBase // NOSONAR
         {
             JobCompleted<ItemResponse?> c => c.Response is null ? NotFound() : Ok(c.Response),
             JobQueued<ItemResponse?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    /// <summary>
+    /// Stock del ítem en TODOS los almacenes de una vez (solo los que tienen InStock o
+    /// Committed distinto de cero) — para P-012 de api-cedi ("mostrar por ubicación").
+    /// Evita N llamadas (una por almacén) a GetStock.
+    /// </summary>
+    [HttpGet("{itemCode}/stock")]
+    [ProducesResponseType(typeof(IReadOnlyList<ItemStockResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetStockAllWarehouses(string itemCode, CancellationToken cancellationToken)
+    {
+        var payloadJson = JsonSerializer.Serialize(new GetItemStockAllWarehousesJobRequest(itemCode));
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetItemStockAllWarehouses",
+            $"GET /api/v1/items/{itemCode}/stock",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetItemStockAllWarehousesUseCase>().ExecuteAsync(itemCode, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<IReadOnlyList<ItemStockResponse>?> c => c.Response is null ? NotFound() : Ok(c.Response),
+            JobQueued<IReadOnlyList<ItemStockResponse>?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }

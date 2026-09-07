@@ -54,7 +54,9 @@ public sealed class ValidateWarehousesUseCase : IUseCase<ValidateWarehousesReque
                 lock (sync)
                 {
                     foreach (var w in data)
+                    {
                         found[w.WhsCode] = w;
+                    }
                 }
             }
             catch (Exception ex)
@@ -66,7 +68,9 @@ public sealed class ValidateWarehousesUseCase : IUseCase<ValidateWarehousesReque
                 lock (sync)
                 {
                     foreach (var code in chunk)
+                    {
                         errors[code] = error;
+                    }
                 }
             }
             finally
@@ -80,10 +84,14 @@ public sealed class ValidateWarehousesUseCase : IUseCase<ValidateWarehousesReque
         var results = codes.Select(code =>
         {
             if (errors.TryGetValue(code, out var error))
+            {
                 return new WarehouseValidationResult(code, Exists: false, WhsName: null, error.Type, error.Message);
+            }
 
             if (found.TryGetValue(code, out var warehouse))
+            {
                 return new WarehouseValidationResult(warehouse.WhsCode, Exists: true, warehouse.WhsName, ErrorType: null);
+            }
 
             return new WarehouseValidationResult(code, Exists: false, WhsName: null, ValidationErrorTypes.NotFound);
         }).ToList();

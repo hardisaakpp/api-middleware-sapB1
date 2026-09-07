@@ -20,6 +20,8 @@ public sealed record PurchaseOrderLineResponse(
 
 public sealed record UpdatePurchaseOrderResponse(bool Success, int DocEntry);
 
+public sealed record UpdatePurchaseOrderStatusResponse(bool Success, int DocEntry, string U_STATUS);
+
 public sealed record PurchaseOrdersListResponse(
     IReadOnlyList<System.Text.Json.Nodes.JsonObject> Value,
     int Count
