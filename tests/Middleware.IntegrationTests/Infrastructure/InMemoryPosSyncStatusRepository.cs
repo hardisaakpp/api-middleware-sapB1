@@ -22,10 +22,12 @@ internal sealed class InMemoryPosSyncStatusRepository : IPosSyncStatusRepository
     public Task<PosSyncStatusEntry?> GetAsync(string docType, int docEntry, CancellationToken ct = default)
         => Task.FromResult(_rows.TryGetValue((docType, docEntry), out var entry) ? entry : null);
 
-    public Task<IReadOnlyList<PosSyncStatusEntry>> ListAsync(string? status, string? docType, int top, CancellationToken ct = default)
+    public Task<IReadOnlyList<PosSyncStatusEntry>> ListAsync(string? status, string? docType, int? docEntry, int top, CancellationToken ct = default)
     {
         IReadOnlyList<PosSyncStatusEntry> result = _rows.Values
-            .Where(e => (status is null || e.Status == status) && (docType is null || e.DocType == docType))
+            .Where(e => (status is null || e.Status == status)
+                        && (docType is null || e.DocType == docType)
+                        && (docEntry is null || e.DocEntry == docEntry))
             .OrderByDescending(e => e.UpdatedAt ?? e.CreatedAt)
             .Take(top)
             .ToList();

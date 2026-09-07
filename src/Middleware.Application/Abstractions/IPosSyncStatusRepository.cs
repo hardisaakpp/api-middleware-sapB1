@@ -12,11 +12,11 @@ public interface IPosSyncStatusRepository
     Task<PosSyncStatusEntry?> GetAsync(string docType, int docEntry, CancellationToken ct = default);
 
     /// <summary>
-    /// Lista entradas filtrando opcionalmente por estado y/o tipo de documento, más reciente
-    /// primero — pensado para que el cliente (Nexus) muestre las pendientes de reintegración
-    /// (REJECTED) y dispare el retry correspondiente.
+    /// Lista entradas filtrando opcionalmente por estado, tipo de documento y/o DocEntry, más
+    /// reciente primero — pensado para que el cliente (Nexus) muestre las pendientes de
+    /// reintegración (REJECTED) y dispare el retry correspondiente.
     /// </summary>
-    Task<IReadOnlyList<PosSyncStatusEntry>> ListAsync(string? status, string? docType, int top, CancellationToken ct = default);
+    Task<IReadOnlyList<PosSyncStatusEntry>> ListAsync(string? status, string? docType, int? docEntry, int top, CancellationToken ct = default);
 }
 
 /// <summary>Tipos de documento rastreados en pos_sync_status.</summary>

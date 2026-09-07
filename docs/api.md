@@ -60,11 +60,89 @@ Consulta el estado de un job encolado.
 
 `status` es uno de: `ENCOLADO` (esperando o reintentando), `PROCESANDO` (intentando ahora mismo), `COMPLETADO` o `ERROR`. Mientras está `ENCOLADO`/`PROCESANDO`, `result` es `null`. Si termina en `ERROR`, `error` trae el motivo y `result` es `null`.
 
+El detalle incluye además `requestType` (handler que lo procesa) y `request` (el payload que se envió
+a SAP, ya parseado), para que soporte pueda ver exactamente qué se intentó integrar.
+
 **Códigos de error**
 
 | Status | Cuándo |
 |---|---|
 | `404 Not Found` | El `jobId` no existe |
+
+### GET /jobs
+
+Listado paginado de la cola, más reciente primero, **sin** `request` ni `result` (usar
+`GET /jobs/{jobId}` para el detalle). Es la vista "Cola SAP" del módulo Integraciones de Nexus.
+
+Query params opcionales: `status` (`ENCOLADO` \| `PROCESANDO` \| `COMPLETADO` \| `ERROR`),
+`endpoint` (búsqueda por contenido, p. ej. `stock-transfers`), `from` / `to` (sobre `createdAt`,
+inclusivos), `page` (default 1) y `pageSize` (default 20, máx 200).
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "items": [
+    {
+      "jobId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "endpoint": "POST /api/v1/liquidaciones",
+      "requestType": "CreateLiquidacion",
+      "status": "ERROR",
+      "httpStatusCode": 503,
+      "request": null,
+      "result": null,
+      "error": "SAP saturado: se agotaron los reintentos.",
+      "attempts": 5,
+      "createdAt": "2026-09-07T10:15:00",
+      "updatedAt": "2026-09-07T10:23:47"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | `status` no es uno de los cuatro valores |
+
+---
+
+## Bitácora de peticiones (api_log)
+
+Cada petición al middleware (salvo `/health`, `/swagger` y las propias consultas de soporte:
+`/api-logs`, `/jobs`, `/webpos/sync-status`) queda registrada en `sc_middleware.dbo.api_log` por
+`ApiLogMiddleware`: endpoint, cuerpo enviado, respuesta (solo en errores o métodos distintos de
+GET), usuario, status HTTP y duración. Los cuerpos se truncan a 2000 caracteres. `fecha` está en
+**hora local de Ecuador (UTC-5)**, no en UTC. Índices recomendados: `sql/create_api_log_indexes.sql`.
+
+### GET /api-logs
+
+Listado paginado, más reciente primero, **sin** `request` ni `response`.
+
+Query params opcionales: `endpoint` (contiene), `usuario` (contiene), `statusCode` (exacto),
+`onlyErrors` (`true` deja solo `statusCode >= 400`), `from` / `to` (sobre `fecha`), `page`
+(default 1) y `pageSize` (default 20, máx 200).
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "items": [
+    { "id": 8812, "endpoint": "POST /api/v1/stock-transfers/direct", "fecha": "2026-09-07T10:15:00", "usuario": "system", "statusCode": 201, "duracionMs": 850, "request": null, "response": null }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+### GET /api-logs/{id}
+
+Misma forma que cada item del listado, con `request` y `response` cargados. `404` si el id no existe.
 
 ---
 
@@ -608,13 +686,14 @@ invocar `rejection.retryEndpoint` y volver a consultar hasta que `result` sea `I
 
 Lista estados con la misma forma que el endpoint puntual, más reciente primero. Query params
 opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`), `docType` (`ST` \| `GR`),
-`rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica `status=REJECTED`) y `top` (default 100,
-máx 500).
+`rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica `status=REJECTED`), `docEntry` (búsqueda
+puntual de un documento) y `top` (default 100, máx 500).
 
-Usos típicos del cliente (Nexus):
+Usos típicos del cliente (Nexus, módulo Integraciones → pestaña HITELL):
 
-- `?status=REJECTED` — bandeja de documentos pendientes de reintegración.
+- `?status=REJECTED` — bandeja de documentos pendientes de reintegración; el botón "Reintegrar" llama a `rejection.retryEndpoint`.
 - `?rejectionType=PRODUCTO_NO_EXISTE` — qué productos hay que crear en HITELL; `rejection.items[].itemCode` da el listado.
+- `?docEntry=587065` — buscar un documento concreto sin conocer su tipo.
 
 **Respuesta — 200 OK**
 

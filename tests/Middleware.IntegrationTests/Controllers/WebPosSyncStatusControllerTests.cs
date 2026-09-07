@@ -106,6 +106,17 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
     }
 
     [Fact]
+    public async Task List_FilterByDocEntry_ReturnsThatDocumentAcrossTypes()
+    {
+        await SeedAsync();
+        var client = _factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<ListResponse>("/api/v1/webpos/sync-status?docEntry=900");
+
+        body!.Entries.Should().ContainSingle(e => e.DocType == "GR" && e.DocEntry == 900);
+    }
+
+    [Fact]
     public async Task List_InvalidRejectionType_Returns400()
     {
         var client = _factory.CreateClient();

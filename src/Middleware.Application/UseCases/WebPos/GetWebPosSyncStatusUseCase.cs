@@ -34,7 +34,7 @@ public sealed class GetWebPosSyncStatusUseCase
     }
 
     public async Task<IReadOnlyList<WebPosSyncStatusResponse>> ListAsync(
-        string? status, string? docType, string? rejectionType, int top, CancellationToken ct = default)
+        string? status, string? docType, string? rejectionType, int? docEntry, int top, CancellationToken ct = default)
     {
         string? normalizedType = null;
         if (!string.IsNullOrWhiteSpace(docType))
@@ -60,7 +60,7 @@ public sealed class GetWebPosSyncStatusUseCase
         }
 
         var boundedTop = Math.Clamp(top, 1, 500);
-        var entries = await _repository.ListAsync(normalizedStatus, normalizedType, boundedTop, ct);
+        var entries = await _repository.ListAsync(normalizedStatus, normalizedType, docEntry, boundedTop, ct);
 
         return entries
             .Select(ToResponse)

@@ -47,9 +47,10 @@ public sealed class WebPosSyncStatusController : ControllerBase
 
     /// <summary>
     /// Lista estados, más reciente primero. Filtros opcionales: status (SYNCED | REJECTED |
-    /// SKIPPED_NOT_POS), docType (ST | GR) y rejectionType (PRODUCTO_NO_EXISTE | OTRO, implica
-    /// status=REJECTED). Uso típico: ?rejectionType=PRODUCTO_NO_EXISTE para la lista de productos
-    /// que hay que crear en HITELL antes de reintegrar.
+    /// SKIPPED_NOT_POS), docType (ST | GR), rejectionType (PRODUCTO_NO_EXISTE | OTRO, implica
+    /// status=REJECTED) y docEntry (búsqueda puntual desde la pantalla de soporte). Uso típico:
+    /// ?rejectionType=PRODUCTO_NO_EXISTE para la lista de productos que hay que crear en HITELL
+    /// antes de reintegrar.
     /// </summary>
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -58,10 +59,11 @@ public sealed class WebPosSyncStatusController : ControllerBase
         [FromQuery] string? status,
         [FromQuery] string? docType,
         [FromQuery] string? rejectionType,
+        [FromQuery] int? docEntry,
         [FromQuery] int top = 100,
         CancellationToken cancellationToken = default)
     {
-        var entries = await _useCase.ListAsync(status, docType, rejectionType, top, cancellationToken);
+        var entries = await _useCase.ListAsync(status, docType, rejectionType, docEntry, top, cancellationToken);
         return Ok(new { entries });
     }
 }

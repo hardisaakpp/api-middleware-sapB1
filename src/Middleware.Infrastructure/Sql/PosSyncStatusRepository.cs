@@ -55,7 +55,7 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
         return await reader.ReadAsync(ct) ? MapEntry(reader) : null;
     }
 
-    public async Task<IReadOnlyList<PosSyncStatusEntry>> ListAsync(string? status, string? docType, int top, CancellationToken ct = default)
+    public async Task<IReadOnlyList<PosSyncStatusEntry>> ListAsync(string? status, string? docType, int? docEntry, int top, CancellationToken ct = default)
     {
         await using var connection = new SqlConnection(_settings.ConnectionString);
         await connection.OpenAsync(ct);
@@ -65,6 +65,7 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
             FROM dbo.pos_sync_status
             WHERE (@status IS NULL OR status = @status)
               AND (@docType IS NULL OR doc_type = @docType)
+              AND (@docEntry IS NULL OR doc_entry = @docEntry)
             ORDER BY COALESCE(updated_at, created_at) DESC;
             """;
 
@@ -72,6 +73,7 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
         cmd.Parameters.AddWithValue("@top", top);
         cmd.Parameters.AddWithValue("@status", (object?)status ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@docType", (object?)docType ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@docEntry", (object?)docEntry ?? DBNull.Value);
 
         var result = new List<PosSyncStatusEntry>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
