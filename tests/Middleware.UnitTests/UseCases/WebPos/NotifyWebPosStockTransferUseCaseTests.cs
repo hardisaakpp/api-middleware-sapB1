@@ -45,7 +45,7 @@ public sealed class NotifyWebPosStockTransferUseCaseTests
         _webPosGatewayMock.Verify(
             g => g.UpdateInventoryAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()),
             Times.Never);
-        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "SKIPPED_NOT_POS", null, It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "SKIPPED_NOT_POS", null, It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public sealed class NotifyWebPosStockTransferUseCaseTests
                     s.Any(x => x.SapStoreCode == "WH02" && x.Stock == 7m)),
                 It.IsAny<CancellationToken>()),
             Times.Once);
-        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "SYNCED", null, It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "SYNCED", null, It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -135,7 +135,7 @@ public sealed class NotifyWebPosStockTransferUseCaseTests
         result.Status.Should().Be(WebPosSyncStatus.Rejected);
         result.Reason.Should().Contain("El producto no existe.");
         _posSyncStatusRepositoryMock.Verify(
-            r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "REJECTED", It.Is<string>(reason => reason!.Contains("El producto no existe.")), It.IsAny<CancellationToken>()),
+            r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "REJECTED", It.Is<string>(reason => reason!.Contains("El producto no existe.")), It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -180,7 +180,7 @@ public sealed class NotifyWebPosStockTransferUseCaseTests
         result.Status.Should().Be(WebPosSyncStatus.Synced);
         calls.Should().Be(2);
         _sapGatewayMock.Verify(g => g.GetItemPosEnrichmentForTestCompanyAsync("ITEM001", It.IsAny<CancellationToken>()), Times.Once);
-        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "SYNCED", null, It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "SYNCED", null, It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

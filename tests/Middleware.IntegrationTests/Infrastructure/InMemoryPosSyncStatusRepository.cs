@@ -11,12 +11,33 @@ internal sealed class InMemoryPosSyncStatusRepository : IPosSyncStatusRepository
 
     public IReadOnlyDictionary<(string DocType, int DocEntry), PosSyncStatusEntry> Rows => _rows;
 
-    public Task UpsertAsync(string docType, int docEntry, int? docNum, string status, string? reason, CancellationToken ct = default)
+    public Task UpsertAsync(
+        string docType, int docEntry, int? docNum, string status, string? reason,
+        IReadOnlyCollection<PosSyncWarehouse> warehouses, CancellationToken ct = default)
     {
+        var list = warehouses.ToList();
         _rows.AddOrUpdate(
             (docType, docEntry),
-            _ => new PosSyncStatusEntry(docType, docEntry, docNum, status, reason, 1, DateTime.UtcNow, null),
-            (_, prev) => prev with { Status = status, Reason = reason, DocNum = docNum ?? prev.DocNum, Attempts = prev.Attempts + 1, UpdatedAt = DateTime.UtcNow });
+            _ => new PosSyncStatusEntry(docType, docEntry, docNum, status, reason, 1, DateTime.UtcNow, null, list),
+            (_, prev) => prev with
+            {
+                Status = status,
+                Reason = reason,
+                DocNum = docNum ?? prev.DocNum,
+                Warehouses = list.Count > 0 ? list : prev.Warehouses,
+                Attempts = prev.Attempts + 1,
+                UpdatedAt = DateTime.UtcNow
+            });
+        return Task.CompletedTask;
+    }
+
+    public Task UpdateDocNumAsync(string docType, int docEntry, int docNum, CancellationToken ct = default)
+    {
+        if (_rows.TryGetValue((docType, docEntry), out var entry) && entry.DocNum is null)
+        {
+            _rows[(docType, docEntry)] = entry with { DocNum = docNum };
+        }
+
         return Task.CompletedTask;
     }
 

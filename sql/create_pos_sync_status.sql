@@ -7,7 +7,7 @@
 -- La clave es compuesta porque los DocEntry de OWTR y OPDN son secuencias independientes en SAP.
 -- doc_num: número visible del documento en SAP, por el que busca soporte desde Nexus.
 -- Ejecutar manualmente contra el ambiente correspondiente antes de desplegar esta funcionalidad.
--- Idempotente. Si la tabla ya existe sin doc_num, correr alter_pos_sync_status_add_doc_num.sql.
+-- Idempotente. Si la tabla ya existe, correr alter_pos_sync_status_add_doc_num.sql y alter_pos_sync_status_add_warehouses.sql.
 
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'pos_sync_status' AND schema_id = SCHEMA_ID('dbo'))
 BEGIN
@@ -21,6 +21,7 @@ BEGIN
         attempts   INT           NOT NULL CONSTRAINT DF_pos_sync_status_attempts DEFAULT (0),
         created_at DATETIME2     NOT NULL CONSTRAINT DF_pos_sync_status_created_at DEFAULT (SYSDATETIME()),
         updated_at DATETIME2     NULL,
+        warehouses NVARCHAR(MAX) NULL,     -- JSON [{"code":"LP-CON","codBusiness":"9"}]: almacenes del documento y su negocio WEBPOS
         CONSTRAINT PK_pos_sync_status PRIMARY KEY (doc_type, doc_entry)
     );
 

@@ -36,13 +36,16 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
         });
     }
 
+    // LP-CON está en WEBPOS (negocio 1); LP-CD es el centro de distribución, fuera de WEBPOS.
+    private static readonly PosSyncWarehouse[] Tiendas = [new("LP-CD", null), new("LP-CON", "1")];
+
     private async Task SeedAsync()
     {
-        await _repository.UpsertAsync("ST", 587061, 1061, "SYNCED", null);
-        await _repository.UpsertAsync("ST", 587065, 1065, "REJECTED", "LIMP0027 (1): No entity found for query");
-        await _repository.UpsertAsync("GR", 900, 5900, "REJECTED", "SKBLZ0147 (1): El producto no existe.");
-        await _repository.UpsertAsync("ST", 587070, 1070, "REJECTED", "ACHOME001 (1): La tienda no pertenece al negocio");
-        await _repository.UpsertAsync("ST", 587080, 1080, "SKIPPED_NOT_POS", null);
+        await _repository.UpsertAsync("ST", 587061, 1061, "SYNCED", null, Tiendas);
+        await _repository.UpsertAsync("ST", 587065, 1065, "REJECTED", "LIMP0027 (1): No entity found for query", Tiendas);
+        await _repository.UpsertAsync("GR", 900, 5900, "REJECTED", "SKBLZ0147 (1): El producto no existe.", Tiendas);
+        await _repository.UpsertAsync("ST", 587070, 1070, "REJECTED", "ACHOME001 (1): La tienda no pertenece al negocio", Tiendas);
+        await _repository.UpsertAsync("ST", 587080, 1080, "SKIPPED_NOT_POS", null, Tiendas);
     }
 
     [Fact]
@@ -63,6 +66,9 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
         body.Rejection.Description.Should().Contain("LIMP0027");
         body.Rejection.Items.Should().ContainSingle(i => i.ItemCode == "LIMP0027" && i.CodBusiness == "1" && i.Type == "PRODUCTO_NO_EXISTE");
         body.Rejection.RetryEndpoint.Should().Be("/api/v1/webpos/stock-transfers/587065/retry");
+        // Soporte necesita saber en qué tienda crear el producto: la del negocio rechazado, no el CD.
+        body.Rejection.Description.Should().Contain("LP-CON").And.NotContain("LP-CD");
+        body.Warehouses.Should().BeEquivalentTo(new[] { new WebPosSyncWarehouse("LP-CD", null), new WebPosSyncWarehouse("LP-CON", "1") });
     }
 
     [Fact]

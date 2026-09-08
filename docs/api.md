@@ -716,7 +716,14 @@ Usos típicos del cliente (Nexus, módulo Integraciones → pestaña HITELL, que
 ```
 
 `docNum` se guarda desde esta versión (columna `doc_num`, ver `sql/alter_pos_sync_status_add_doc_num.sql`
-para ambientes donde la tabla ya existía); las filas anteriores lo traen `null` hasta su próximo reintento.
+para ambientes donde la tabla ya existía). Las filas anteriores que no lo tienen se **completan
+automáticamente** al consultarlas: el middleware lee el documento en SAP una sola vez y lo persiste;
+si SAP no responde, la fila sale con `docNum: null`.
+
+`warehouses` (columna `warehouses`, JSON; ver `sql/alter_pos_sync_status_add_warehouses.sql`) trae los
+almacenes del documento con su negocio WEBPOS (`[{ "code": "LP-CON", "codBusiness": "9" }, { "code": "LP-CD", "codBusiness": null }]`),
+y en un rechazo `rejection.description` nombra las tiendas del negocio rechazado: es donde soporte debe
+crear el producto antes de reintegrar. Filas anteriores: `[]` hasta el siguiente reintento.
 
 ---
 

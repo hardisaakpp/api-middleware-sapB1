@@ -47,7 +47,7 @@ public sealed class NotifyWebPosGoodsReceiptUseCaseTests
         _webPosGatewayMock.Verify(
             g => g.UpdateInventoryAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()),
             Times.Never);
-        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "SKIPPED_NOT_POS", null, It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "SKIPPED_NOT_POS", null, It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -75,7 +75,7 @@ public sealed class NotifyWebPosGoodsReceiptUseCaseTests
                 It.Is<IReadOnlyList<WebPosStoreStock>>(s => s.Count == 1 && s[0].SapStoreCode == "WH01" && s[0].Stock == 12m),
                 It.IsAny<CancellationToken>()),
             Times.Once);
-        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "SYNCED", null, It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "SYNCED", null, It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()), Times.Once);
 
         // Todas las lecturas SAP del flujo GR van contra la compañía por defecto, nunca la de test.
         _sapGatewayMock.Verify(g => g.GetItemStockForTestCompanyAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -133,7 +133,7 @@ public sealed class NotifyWebPosGoodsReceiptUseCaseTests
         result.Status.Should().Be(WebPosSyncStatus.Rejected);
         result.Reason.Should().Contain("Tienda fuera del negocio.");
         _posSyncStatusRepositoryMock.Verify(
-            r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "REJECTED", It.Is<string>(reason => reason!.Contains("Tienda fuera del negocio.")), It.IsAny<CancellationToken>()),
+            r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "REJECTED", It.Is<string>(reason => reason!.Contains("Tienda fuera del negocio.")), It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -175,6 +175,6 @@ public sealed class NotifyWebPosGoodsReceiptUseCaseTests
         calls.Should().Be(2);
         _sapGatewayMock.Verify(g => g.GetItemPosEnrichmentAsync("ITEM001", It.IsAny<CancellationToken>()), Times.Once);
         _sapGatewayMock.Verify(g => g.GetItemPosEnrichmentForTestCompanyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "SYNCED", null, It.IsAny<CancellationToken>()), Times.Once);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "SYNCED", null, It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

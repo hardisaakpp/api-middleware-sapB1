@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Responses;
 using Middleware.Application.WebPos;
@@ -26,10 +27,14 @@ public sealed class GetWebPosSyncStatusUseCase
     private static readonly string[] ValidRejectionTypes = [WebPosRejectionTypes.ProductNotFound, WebPosRejectionTypes.Other];
 
     private readonly IPosSyncStatusRepository _repository;
+    private readonly ISapGateway _sapGateway;
+    private readonly ILogger<GetWebPosSyncStatusUseCase> _logger;
 
-    public GetWebPosSyncStatusUseCase(IPosSyncStatusRepository repository)
+    public GetWebPosSyncStatusUseCase(IPosSyncStatusRepository repository, ISapGateway sapGateway, ILogger<GetWebPosSyncStatusUseCase> logger)
     {
         _repository = repository;
+        _sapGateway = sapGateway;
+        _logger = logger;
     }
 
     public async Task<WebPosSyncStatusResponse?> GetAsync(string docType, int docEntry, CancellationToken ct = default)
@@ -38,7 +43,7 @@ public sealed class GetWebPosSyncStatusUseCase
             ?? throw new ArgumentException($"docType inválido: '{docType}'. Valores aceptados: ST, GR.");
 
         var entry = await _repository.GetAsync(normalized, docEntry, ct);
-        return entry is null ? null : ToResponse(entry);
+        return entry is null ? null : ToResponse(await EnsureDocNumAsync(entry, ct));
     }
 
     public async Task<PagedResult<WebPosSyncStatusResponse>> ListAsync(
@@ -74,7 +79,8 @@ public sealed class GetWebPosSyncStatusUseCase
         {
             var result = await _repository.ListAsync(
                 new PosSyncStatusFilter(normalizedStatus, normalizedType, query.DocEntry, query.DocNum, query.From, query.To, page, pageSize), ct);
-            return new PagedResult<WebPosSyncStatusResponse>(result.Items.Select(ToResponse).ToList(), result.Total, page, pageSize);
+            var items = await EnsureDocNumsAsync(result.Items, ct);
+            return new PagedResult<WebPosSyncStatusResponse>(items.Select(ToResponse).ToList(), result.Total, page, pageSize);
         }
 
         var rejected = await _repository.ListAsync(
@@ -82,10 +88,65 @@ public sealed class GetWebPosSyncStatusUseCase
         var matching = rejected.Items
             .Select(ToResponse)
             .Where(r => r.Rejection?.Type == normalizedRejectionType)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToList();
+        var matchingTotal = rejected.Items.Count(e => WebPosRejectionClassifier.ClassifyReason(e.Reason) == normalizedRejectionType);
 
-        return new PagedResult<WebPosSyncStatusResponse>(
-            matching.Skip((page - 1) * pageSize).Take(pageSize).ToList(), matching.Count, page, pageSize);
+        // Solo la página visible se completa contra SAP.
+        var completed = await EnsureDocNumsAsync(
+            rejected.Items.Where(e => matching.Any(m => m.DocType == e.DocType && m.DocEntry == e.DocEntry)).ToList(), ct);
+
+        return new PagedResult<WebPosSyncStatusResponse>(completed.Select(ToResponse).ToList(), matchingTotal, page, pageSize);
+    }
+
+    /// <summary>
+    /// Las filas registradas por versiones anteriores del middleware no tienen DocNum, que es lo único
+    /// que le sirve al usuario de soporte. Se completa leyendo el documento en SAP una sola vez (queda
+    /// persistido); si SAP no responde, la fila se devuelve tal cual.
+    /// </summary>
+    private async Task<IReadOnlyList<PosSyncStatusEntry>> EnsureDocNumsAsync(IReadOnlyList<PosSyncStatusEntry> entries, CancellationToken ct)
+    {
+        if (entries.All(e => e.DocNum is not null))
+        {
+            return entries;
+        }
+
+        var completed = new List<PosSyncStatusEntry>(entries.Count);
+        foreach (var entry in entries)
+        {
+            completed.Add(await EnsureDocNumAsync(entry, ct));
+        }
+
+        return completed;
+    }
+
+    private async Task<PosSyncStatusEntry> EnsureDocNumAsync(PosSyncStatusEntry entry, CancellationToken ct)
+    {
+        if (entry.DocNum is not null)
+        {
+            return entry;
+        }
+
+        try
+        {
+            int? docNum = entry.DocType == PosSyncDocTypes.GoodsReceipt
+                ? (await _sapGateway.GetGoodsReceiptAsync(entry.DocEntry, ct))?.DocNum
+                : (await _sapGateway.GetStockTransferForTestCompanyAsync(entry.DocEntry, ct))?.DocNum;
+
+            if (docNum is null)
+            {
+                return entry;
+            }
+
+            await _repository.UpdateDocNumAsync(entry.DocType, entry.DocEntry, docNum.Value, ct);
+            return entry with { DocNum = docNum };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "No se pudo completar el DocNum de {DocType} DocEntry={DocEntry} desde SAP.", entry.DocType, entry.DocEntry);
+            return entry;
+        }
     }
 
     private static string? NormalizeDocType(string docType) =>
@@ -101,10 +162,11 @@ public sealed class GetWebPosSyncStatusUseCase
         };
 
         var rejection = result == WebPosIntegrationResults.Rejected ? BuildRejection(entry) : null;
+        var warehouses = entry.Warehouses.Select(w => new WebPosSyncWarehouse(w.Code, w.CodBusiness)).ToList();
 
         return new WebPosSyncStatusResponse(
             entry.DocType, entry.DocEntry, entry.DocNum, entry.Status, result, entry.Reason,
-            entry.Attempts, entry.CreatedAt, entry.UpdatedAt, rejection);
+            entry.Attempts, entry.CreatedAt, entry.UpdatedAt, rejection, warehouses);
     }
 
     private static WebPosRejectionDetail BuildRejection(PosSyncStatusEntry entry)
@@ -112,9 +174,19 @@ public sealed class GetWebPosSyncStatusUseCase
         var items = WebPosRejectionClassifier.ParseItems(entry.Reason);
         var type = WebPosRejectionClassifier.ClassifyReason(entry.Reason);
 
+        // Tiendas donde hay que actuar: los almacenes del documento cuyo negocio WEBPOS coincide con
+        // el de los ítems rechazados (HITELL rechaza por negocio, no por tienda).
+        var rejectedBusinesses = items.Select(i => i.CodBusiness).Where(b => b is not null).ToHashSet();
+        var stores = entry.Warehouses
+            .Where(w => w.CodBusiness is not null && (rejectedBusinesses.Count == 0 || rejectedBusinesses.Contains(w.CodBusiness)))
+            .Select(w => w.Code)
+            .Distinct()
+            .ToList();
+        var storesText = stores.Count > 0 ? $" Tiendas/almacenes: {string.Join(", ", stores)}." : string.Empty;
+
         var description = type == WebPosRejectionTypes.ProductNotFound
-            ? $"Producto no creado en HITELL: {string.Join(", ", items.Select(i => i.ItemCode ?? "?").Distinct())}. Crear el producto en HITELL y reintegrar."
-            : "HITELL rechazó la actualización de stock. Revisar el mensaje por ítem, corregir en HITELL y reintegrar.";
+            ? $"Producto no creado en HITELL: {string.Join(", ", items.Select(i => i.ItemCode ?? "?").Distinct())}.{storesText} Crear el producto en HITELL para esa(s) tienda(s) y reintegrar."
+            : $"HITELL rechazó la actualización de stock.{storesText} Revisar el mensaje por ítem, corregir en HITELL y reintegrar.";
 
         var resource = entry.DocType == PosSyncDocTypes.GoodsReceipt ? "goods-receipts" : "stock-transfers";
         return new WebPosRejectionDetail(type, description, items, $"/api/v1/webpos/{resource}/{entry.DocEntry}/retry");
