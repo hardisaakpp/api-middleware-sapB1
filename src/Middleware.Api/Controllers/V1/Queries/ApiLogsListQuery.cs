@@ -15,8 +15,8 @@ public sealed class ApiLogsListQuery
     /// <summary>Código HTTP exacto.</summary>
     public int? StatusCode { get; init; }
 
-    /// <summary>Solo respuestas con status >= 400.</summary>
-    public bool OnlyErrors { get; init; }
+    /// <summary>Solo respuestas con status >= 400. Si no viene en la query string, se listan todas.</summary>
+    public bool OnlyErrors { get; init; } = false;
 
     /// <summary>Desde (fecha en hora local de Ecuador, inclusiva).</summary>
     public DateTime? From { get; init; }
