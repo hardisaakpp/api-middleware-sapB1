@@ -32,6 +32,9 @@ public interface ISapGateway
     public Task<DocumentCreatedResult> CreateLiquidacionAsync(CreateLiquidacionRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreatePurchaseOrderAsync(CreatePurchaseOrderRequest request, CancellationToken ct = default);
     public Task<PurchaseOrderResponse?> GetPurchaseOrderAsync(int docEntry, CancellationToken ct = default);
+
+    /// <summary>Resolves a PurchaseOrder's DocEntry from its DocNum (Service Layer only indexes by DocEntry). Returns null if no match exists in SAP.</summary>
+    public Task<int?> GetPurchaseOrderDocEntryByDocNumAsync(int docNum, CancellationToken ct = default);
     public Task<PurchaseOrdersListResponse> GetPurchaseOrdersAsync(GetPurchaseOrdersRequest request, CancellationToken ct = default);
     public Task UpdatePurchaseOrderAsync(int docEntry, UpdatePurchaseOrderRequest request, CancellationToken ct = default);
     public Task UpdatePurchaseOrderStatusAsync(int docEntry, string status, CancellationToken ct = default);

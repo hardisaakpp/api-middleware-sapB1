@@ -6,7 +6,9 @@ public sealed record PurchaseOrderResponse(
     string VendorCode,
     string DocDate,
     string DocStatus,
-    IReadOnlyList<PurchaseOrderLineResponse> Lines
+    IReadOnlyList<PurchaseOrderLineResponse> Lines,
+    string? CardName = null,
+    string? DocDueDate = null
 );
 
 public sealed record PurchaseOrderLineResponse(
@@ -15,7 +17,9 @@ public sealed record PurchaseOrderLineResponse(
     decimal Quantity,
     decimal OpenQuantity,
     decimal UnitPrice,
-    string WarehouseCode
+    string WarehouseCode,
+    string? ItemDescription = null,
+    string? CodeBars = null
 );
 
 public sealed record UpdatePurchaseOrderResponse(bool Success, int DocEntry);

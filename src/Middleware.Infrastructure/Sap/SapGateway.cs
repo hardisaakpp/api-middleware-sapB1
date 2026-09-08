@@ -675,6 +675,8 @@ internal sealed class SapGateway : ISapGateway
             }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
+        string? OptionalString(JsonElement el, string field) =>
+            el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 
         var lines = root.TryGetProperty(DocumentLinesProperty, out var linesEl)
             ? linesEl.EnumerateArray()
@@ -687,7 +689,8 @@ internal sealed class SapGateway : ISapGateway
                     // PurchaseOrder con líneas reales (ver hallazgo de api-cedi, mismo bug).
                     RequiredDecimal(l, "RemainingOpenQuantity", $"DocumentLines[{i}]"),
                     RequiredDecimal(l, "UnitPrice", $"DocumentLines[{i}]"),
-                    RequiredString(l, WarehouseCodeProperty, $"DocumentLines[{i}]")
+                    RequiredString(l, WarehouseCodeProperty, $"DocumentLines[{i}]"),
+                    ItemDescription: OptionalString(l, "ItemDescription")
                 )).ToList()
             : (IReadOnlyList<PurchaseOrderLineResponse>)[];
 
@@ -697,8 +700,31 @@ internal sealed class SapGateway : ISapGateway
             RequiredString(root, "CardCode", "root"),
             RequiredString(root, DocDateProperty, "root"),
             RequiredString(root, "DocumentStatus", "root"),
-            lines
+            lines,
+            CardName: OptionalString(root, "CardName"),
+            DocDueDate: OptionalString(root, "DocDueDate")
         );
+    }
+
+    public async Task<int?> GetPurchaseOrderDocEntryByDocNumAsync(int docNum, CancellationToken ct = default)
+    {
+        var resource = $"PurchaseOrders?$filter=DocNum eq {docNum}&$select=DocEntry&$orderby=DocEntry desc&$top=1";
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
+        {
+            return null;
+        }
+
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.TryGetProperty(DocEntryProperty, out var de) && de.TryGetInt32(out var docEntry))
+            {
+                return docEntry;
+            }
+        }
+
+        return null;
     }
 
     public async Task<PurchaseOrdersListResponse> GetPurchaseOrdersAsync(GetPurchaseOrdersRequest request, CancellationToken ct = default)
