@@ -51,7 +51,7 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
             _logger.LogInformation(
                 "DocEntry={DocEntry}: ni {FromWarehouse} ni {ToWarehouse} están en WEBPOS (U_WEBPOS) — se omite la notificación",
                 request.DocEntry, request.FromWarehouse, request.ToWarehouse);
-            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, "SKIPPED_NOT_POS", null, cancellationToken);
+            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "SKIPPED_NOT_POS", null, cancellationToken);
             return new WebPosSyncInfo(WebPosSyncStatus.SkippedNotPos);
         }
 
@@ -76,12 +76,12 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
             _logger.LogWarning(
                 "DocEntry={DocEntry}: WEBPOS rechazó {Count} actualización(es) — {Reason}",
                 request.DocEntry, rejectionReasons.Count, reason);
-            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, "REJECTED", reason, cancellationToken);
+            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "REJECTED", reason, cancellationToken);
             return new WebPosSyncInfo(WebPosSyncStatus.Rejected, reason);
         }
 
         _logger.LogInformation("DocEntry={DocEntry}: stock sincronizado en WEBPOS correctamente", request.DocEntry);
-        await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, "SYNCED", null, cancellationToken);
+        await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "SYNCED", null, cancellationToken);
         return new WebPosSyncInfo(WebPosSyncStatus.Synced);
     }
 

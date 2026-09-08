@@ -38,6 +38,7 @@ public sealed record WebPosRejectionDetail(
 public sealed record WebPosSyncStatusResponse(
     string DocType,
     int DocEntry,
+    int? DocNum,
     string Status,
     string Result,
     string? Reason,

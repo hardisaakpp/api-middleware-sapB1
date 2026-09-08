@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using Middleware.Api.Controllers.V1.Queries;
 using Middleware.Application.Dtos.Responses;
 using Middleware.Application.UseCases.WebPos;
 
@@ -46,22 +47,25 @@ public sealed class WebPosSyncStatusController : ControllerBase
     }
 
     /// <summary>
-    /// Lista estados, más reciente primero. Filtros opcionales: status (SYNCED | REJECTED |
-    /// SKIPPED_NOT_POS), docType (ST | GR) y rejectionType (PRODUCTO_NO_EXISTE | OTRO, implica
-    /// status=REJECTED). Uso típico: ?rejectionType=PRODUCTO_NO_EXISTE para la lista de productos
-    /// que hay que crear en HITELL antes de reintegrar.
+    /// Listado paginado, más reciente primero. Filtros opcionales: status (SYNCED | REJECTED |
+    /// SKIPPED_NOT_POS), docType (ST | GR), rejectionType (PRODUCTO_NO_EXISTE | OTRO, implica
+    /// status=REJECTED), docNum / docEntry (búsqueda puntual) y from / to (sobre la última
+    /// actualización). page (default 1) y pageSize (default 20, máx 200).
     /// </summary>
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> List(
-        [FromQuery] string? status,
-        [FromQuery] string? docType,
-        [FromQuery] string? rejectionType,
-        [FromQuery] int top = 100,
-        CancellationToken cancellationToken = default)
+    public async Task<IActionResult> List([FromQuery] WebPosSyncStatusListQuery query, CancellationToken cancellationToken)
     {
-        var entries = await _useCase.ListAsync(status, docType, rejectionType, top, cancellationToken);
-        return Ok(new { entries });
+        var result = await _useCase.ListAsync(query.ToQuery(), cancellationToken);
+
+        return Ok(new
+        {
+            entries = result.Items,
+            total = result.Total,
+            page = result.Page,
+            pageSize = result.PageSize,
+            totalPages = result.TotalPages
+        });
     }
 }

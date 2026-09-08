@@ -12,7 +12,9 @@ public sealed class ApiLogMiddleware
         "/health/ready"
     };
 
-    private static readonly string[] SkipPrefixes = ["/swagger"];
+    // Las consultas de soporte (bitácora, cola de jobs, estado WEBPOS) son solo lectura y muy
+    // frecuentes desde Nexus: registrarlas llenaría api_log con ruido que tapa las integraciones reales.
+    private static readonly string[] SkipPrefixes = ["/swagger", "/api/v1/api-logs", "/api/v1/jobs", "/api/v1/webpos/sync-status"];
 
     // Truncate bodies to avoid oversized rows
     private const int MaxBodyLength = 2000;

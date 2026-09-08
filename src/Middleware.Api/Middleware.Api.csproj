@@ -23,6 +23,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>41b4491f-62bc-440f-b047-2dd592f5a04f</UserSecretsId>
+    <!-- Server GC reserva un heap por core y no lo libera agresivamente; en el
+         contenedor de producción (memoria limitada) eso agota el límite sin
+         necesidad. Workstation GC es más conservador con memoria. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
   </PropertyGroup>
 
 </Project>
