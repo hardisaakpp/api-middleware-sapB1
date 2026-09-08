@@ -717,8 +717,11 @@ Usos típicos del cliente (Nexus, módulo Integraciones → pestaña HITELL, que
 
 `docNum` se guarda desde esta versión (columna `doc_num`, ver `sql/alter_pos_sync_status_add_doc_num.sql`
 para ambientes donde la tabla ya existía). Las filas anteriores que no lo tienen se **completan
-automáticamente** al consultarlas: el middleware lee el documento en SAP una sola vez y lo persiste;
-si SAP no responde, la fila sale con `docNum: null`.
+automáticamente** al consultarlas, una sola vez y quedan persistidas: primero desde la **bitácora**
+(`api_log` guarda la respuesta del POST que creó el documento, con su `docNum`, y la petición con sus
+almacenes — sin depender de SAP) y, si allí no hay rastro, leyendo el documento en SAP. Si nada
+responde, la fila sale con `docNum: null`. El negocio WEBPOS de cada almacén sí requiere SAP; si SAP
+no responde, los almacenes no se guardan para no mostrarlos como "fuera de WEBPOS" por error.
 
 `warehouses` (columna `warehouses`, JSON; ver `sql/alter_pos_sync_status_add_warehouses.sql`) trae los
 almacenes del documento con su negocio WEBPOS (`[{ "code": "LP-CON", "codBusiness": "9" }, { "code": "LP-CD", "codBusiness": null }]`),

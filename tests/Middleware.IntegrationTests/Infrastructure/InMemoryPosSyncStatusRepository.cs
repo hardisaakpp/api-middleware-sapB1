@@ -41,6 +41,16 @@ internal sealed class InMemoryPosSyncStatusRepository : IPosSyncStatusRepository
         return Task.CompletedTask;
     }
 
+    public Task UpdateWarehousesAsync(string docType, int docEntry, IReadOnlyCollection<PosSyncWarehouse> warehouses, CancellationToken ct = default)
+    {
+        if (warehouses.Count > 0 && _rows.TryGetValue((docType, docEntry), out var entry) && entry.Warehouses.Count == 0)
+        {
+            _rows[(docType, docEntry)] = entry with { Warehouses = warehouses.ToList() };
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task<PosSyncStatusEntry?> GetAsync(string docType, int docEntry, CancellationToken ct = default)
         => Task.FromResult(_rows.TryGetValue((docType, docEntry), out var entry) ? entry : null);
 

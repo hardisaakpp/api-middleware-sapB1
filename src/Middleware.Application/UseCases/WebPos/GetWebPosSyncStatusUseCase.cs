@@ -27,12 +27,18 @@ public sealed class GetWebPosSyncStatusUseCase
     private static readonly string[] ValidRejectionTypes = [WebPosRejectionTypes.ProductNotFound, WebPosRejectionTypes.Other];
 
     private readonly IPosSyncStatusRepository _repository;
+    private readonly IApiLogRepository _apiLog;
     private readonly ISapGateway _sapGateway;
     private readonly ILogger<GetWebPosSyncStatusUseCase> _logger;
 
-    public GetWebPosSyncStatusUseCase(IPosSyncStatusRepository repository, ISapGateway sapGateway, ILogger<GetWebPosSyncStatusUseCase> logger)
+    public GetWebPosSyncStatusUseCase(
+        IPosSyncStatusRepository repository,
+        IApiLogRepository apiLog,
+        ISapGateway sapGateway,
+        ILogger<GetWebPosSyncStatusUseCase> logger)
     {
         _repository = repository;
+        _apiLog = apiLog;
         _sapGateway = sapGateway;
         _logger = logger;
     }
@@ -101,13 +107,15 @@ public sealed class GetWebPosSyncStatusUseCase
     }
 
     /// <summary>
-    /// Las filas registradas por versiones anteriores del middleware no tienen DocNum, que es lo único
-    /// que le sirve al usuario de soporte. Se completa leyendo el documento en SAP una sola vez (queda
-    /// persistido); si SAP no responde, la fila se devuelve tal cual.
+    /// Las filas registradas por versiones anteriores del middleware no tienen DocNum ni almacenes,
+    /// que es lo que le sirve al usuario de soporte. Se completan una sola vez (quedan persistidas):
+    /// primero desde la bitácora (la petición que creó el documento trae el DocNum que devolvió SAP y
+    /// los almacenes enviados, sin depender de SAP) y, si allí no está, leyendo el documento en SAP.
+    /// Si nada responde, la fila se devuelve tal cual.
     /// </summary>
     private async Task<IReadOnlyList<PosSyncStatusEntry>> EnsureDocNumsAsync(IReadOnlyList<PosSyncStatusEntry> entries, CancellationToken ct)
     {
-        if (entries.All(e => e.DocNum is not null))
+        if (entries.All(e => e.DocNum is not null && e.Warehouses.Count > 0))
         {
             return entries;
         }
@@ -123,29 +131,80 @@ public sealed class GetWebPosSyncStatusUseCase
 
     private async Task<PosSyncStatusEntry> EnsureDocNumAsync(PosSyncStatusEntry entry, CancellationToken ct)
     {
-        if (entry.DocNum is not null)
+        if (entry.DocNum is not null && entry.Warehouses.Count > 0)
         {
             return entry;
         }
 
+        var current = entry;
         try
         {
-            int? docNum = entry.DocType == PosSyncDocTypes.GoodsReceipt
-                ? (await _sapGateway.GetGoodsReceiptAsync(entry.DocEntry, ct))?.DocNum
-                : (await _sapGateway.GetStockTransferForTestCompanyAsync(entry.DocEntry, ct))?.DocNum;
+            var trace = await _apiLog.FindDocumentTraceAsync(entry.DocType, entry.DocEntry, ct);
 
-            if (docNum is null)
+            if (current.DocNum is null)
             {
-                return entry;
+                var docNum = trace?.DocNum ?? await ReadDocNumFromSapAsync(current, ct);
+                if (docNum is not null)
+                {
+                    await _repository.UpdateDocNumAsync(current.DocType, current.DocEntry, docNum.Value, ct);
+                    current = current with { DocNum = docNum };
+                }
             }
 
-            await _repository.UpdateDocNumAsync(entry.DocType, entry.DocEntry, docNum.Value, ct);
-            return entry with { DocNum = docNum };
+            if (current.Warehouses.Count == 0 && trace is { WarehouseCodes.Count: > 0 })
+            {
+                var warehouses = await ResolveWarehousesAsync(current.DocType, trace.WarehouseCodes, ct);
+                if (warehouses is not null)
+                {
+                    await _repository.UpdateWarehousesAsync(current.DocType, current.DocEntry, warehouses, ct);
+                    current = current with { Warehouses = warehouses };
+                }
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "No se pudo completar el DocNum de {DocType} DocEntry={DocEntry} desde SAP.", entry.DocType, entry.DocEntry);
-            return entry;
+            _logger.LogWarning(ex, "No se pudo completar DocNum/almacenes de {DocType} DocEntry={DocEntry}.", entry.DocType, entry.DocEntry);
+        }
+
+        return current;
+    }
+
+    private async Task<int?> ReadDocNumFromSapAsync(PosSyncStatusEntry entry, CancellationToken ct)
+    {
+        try
+        {
+            return entry.DocType == PosSyncDocTypes.GoodsReceipt
+                ? (await _sapGateway.GetGoodsReceiptAsync(entry.DocEntry, ct))?.DocNum
+                : (await _sapGateway.GetStockTransferForTestCompanyAsync(entry.DocEntry, ct))?.DocNum;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SAP no respondió al leer el DocNum de {DocType} DocEntry={DocEntry}.", entry.DocType, entry.DocEntry);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// El negocio WEBPOS de cada almacén solo lo sabe SAP (UDF U_WEBPOS / U_NEGOCIO). Si SAP no
+    /// responde se devuelve null y no se guarda nada: un almacén sin negocio se mostraría como
+    /// "fuera de WEBPOS", que sería incorrecto.
+    /// </summary>
+    private async Task<List<PosSyncWarehouse>?> ResolveWarehousesAsync(string docType, IReadOnlyList<string> codes, CancellationToken ct)
+    {
+        try
+        {
+            var posInfo = docType == PosSyncDocTypes.GoodsReceipt
+                ? await _sapGateway.GetWarehousesPosInfoAsync(codes, ct)
+                : await _sapGateway.GetWarehousesPosInfoForTestCompanyAsync(codes, ct);
+
+            return codes
+                .Select(code => new PosSyncWarehouse(code, posInfo.GetValueOrDefault(code) is { IsPosEnabled: true } info ? info.CodBusiness : null))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SAP no respondió al resolver el negocio WEBPOS de los almacenes {Codes}.", string.Join(", ", codes));
+            return null;
         }
     }
 

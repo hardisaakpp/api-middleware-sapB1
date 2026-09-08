@@ -70,6 +70,29 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    public async Task UpdateWarehousesAsync(string docType, int docEntry, IReadOnlyCollection<PosSyncWarehouse> warehouses, CancellationToken ct = default)
+    {
+        if (warehouses.Count == 0)
+        {
+            return;
+        }
+
+        await using var connection = new SqlConnection(_settings.ConnectionString);
+        await connection.OpenAsync(ct);
+
+        const string sql = """
+            UPDATE dbo.pos_sync_status SET warehouses = @warehouses
+            WHERE doc_type = @docType AND doc_entry = @docEntry AND warehouses IS NULL;
+            """;
+
+        await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
+        cmd.Parameters.AddWithValue("@docType", docType);
+        cmd.Parameters.AddWithValue("@docEntry", docEntry);
+        cmd.Parameters.Add("@warehouses", SqlDbType.NVarChar, -1).Value = JsonSerializer.Serialize(warehouses, JsonOptions);
+
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     public async Task<PosSyncStatusEntry?> GetAsync(string docType, int docEntry, CancellationToken ct = default)
     {
         await using var connection = new SqlConnection(_settings.ConnectionString);

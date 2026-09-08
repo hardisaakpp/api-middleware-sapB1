@@ -18,6 +18,7 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
 {
     private readonly WebApplicationFactory<Program> _factory;
     private readonly InMemoryPosSyncStatusRepository _repository = new();
+    private readonly InMemoryApiLogRepository _apiLog = new();
 
     public WebPosSyncStatusControllerTests(WebApplicationFactory<Program> factory)
     {
@@ -25,13 +26,17 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
         {
             builder.ConfigureServices(services =>
             {
-                var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IPosSyncStatusRepository));
-                if (descriptor is not null)
+                foreach (var type in new[] { typeof(IPosSyncStatusRepository), typeof(IApiLogRepository) })
                 {
-                    services.Remove(descriptor);
+                    var descriptor = services.SingleOrDefault(d => d.ServiceType == type);
+                    if (descriptor is not null)
+                    {
+                        services.Remove(descriptor);
+                    }
                 }
 
                 services.AddScoped<IPosSyncStatusRepository>(_ => _repository);
+                services.AddScoped<IApiLogRepository>(_ => _apiLog);
             });
         });
     }
@@ -135,6 +140,25 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
 
         body!.Total.Should().Be(0);
         body.Entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Get_RowWithoutDocNum_IsCompletedFromApiLogWithoutCallingSap()
+    {
+        // Fila vieja: sin DocNum ni almacenes. La bitácora tiene la creación del documento.
+        await _repository.UpsertAsync("ST", 587092, null, "SYNCED", null, []);
+        _apiLog.Seed(new ApiLogEntry(
+            "POST /api/v1/stock-transfers/direct",
+            """{"fromWarehouse":"TRL-SCA","toWarehouse":"RL-SCA","lines":[]}""",
+            """{"docEntry":587092,"docNum":169603,"webPosSync":{"status":"Synced"}}""",
+            "system", 201, 900), new DateTime(2026, 9, 4, 10, 0, 0));
+        var client = _factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<WebPosSyncStatusResponse>("/api/v1/webpos/sync-status/ST/587092");
+
+        body!.DocNum.Should().Be(169603);
+        // Queda persistido: la segunda lectura ya no depende de la bitácora.
+        (await _repository.GetAsync("ST", 587092))!.DocNum.Should().Be(169603);
     }
 
     [Fact]

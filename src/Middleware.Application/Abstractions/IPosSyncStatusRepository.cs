@@ -24,6 +24,9 @@ public interface IPosSyncStatusRepository
     /// <summary>Completa el DocNum de una fila registrada por una versión anterior que no lo guardaba.</summary>
     Task UpdateDocNumAsync(string docType, int docEntry, int docNum, CancellationToken ct = default);
 
+    /// <summary>Completa los almacenes de una fila que no los tenía (solo si siguen vacíos).</summary>
+    Task UpdateWarehousesAsync(string docType, int docEntry, IReadOnlyCollection<PosSyncWarehouse> warehouses, CancellationToken ct = default);
+
     Task<PosSyncStatusEntry?> GetAsync(string docType, int docEntry, CancellationToken ct = default);
 
     /// <summary>

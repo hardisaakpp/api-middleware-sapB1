@@ -38,6 +38,13 @@ public sealed record ApiLogFilter(
     int Page,
     int PageSize);
 
+/// <summary>
+/// Lo que la bitácora sabe de la creación de un documento SAP: el DocNum que devolvió SAP y los
+/// almacenes que venían en la petición. Sirve para completar filas viejas de pos_sync_status sin
+/// consultar SAP.
+/// </summary>
+public sealed record ApiLogDocumentTrace(int? DocNum, IReadOnlyList<string> WarehouseCodes);
+
 public interface IApiLogRepository
 {
     Task InsertAsync(ApiLogEntry entry, CancellationToken ct = default);
@@ -45,4 +52,10 @@ public interface IApiLogRepository
     Task<PagedResult<ApiLogRecord>> ListAsync(ApiLogFilter filter, CancellationToken ct = default);
 
     Task<ApiLogRecord?> GetByIdAsync(long id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Busca la petición POST que creó el documento (stock-transfers para ST, goods-receipts para GR)
+    /// por el <c>docEntry</c> de su respuesta y extrae DocNum y almacenes. Null si no hay rastro.
+    /// </summary>
+    Task<ApiLogDocumentTrace?> FindDocumentTraceAsync(string docType, int docEntry, CancellationToken ct = default);
 }
