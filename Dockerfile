@@ -1,5 +1,6 @@
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 USER $APP_UID
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 EXPOSE 8080
 EXPOSE 8081
@@ -16,6 +17,8 @@ COPY ["global.json", "Directory.Build.props", "./"]
 COPY ["src/", "src/"]
 WORKDIR "/src/src/Middleware.Api"
 RUN dotnet build "./Middleware.Api.csproj" -c "$BUILD_CONFIGURATION" -o /app/build
+# Copia los binarios generados en el agente por dotnet publish
+COPY ./publish .
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
