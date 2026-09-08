@@ -107,6 +107,12 @@ stages:
     steps:
 
     # [ESTANDARIZACIÓN 1]: Autenticación segura, Build y Push
+    # 1. Compilación directa en el servidor local (Evita descargar el SDK en Docker)
+    - script: |
+        dotnet publish src/Middleware.Api/Middleware.Api.csproj -c $(buildConfiguration) -o $(Build.SourcesDirectory)/publish
+      displayName: 'Publicar binarios de .NET 8 en el host'
+
+    # 2. Empaquetado ligero y publicación en ACR
     - bash: |
         set -euo pipefail
         
@@ -114,12 +120,14 @@ stages:
         printf '%s' "$ACR_PASSWORD" | docker login dockermg-g9hrgcc4etdrh8eg.azurecr.io -u "$ACR_USERNAME" --password-stdin
 
         echo "=== 2. Construyendo imagen Docker para la API Middleware SAP ($ENV_TAG) ==="
+        echo "=== 2. Construyendo imagen Docker liviana ($ENV_TAG) ==="
         docker build -f $DOCKERFILE_PATH \
           -t $IMAGE_NAME:$UNIQUE_TAG \
           -t $IMAGE_NAME:$ENV_TAG \
           $(Build.SourcesDirectory)
           
         echo "=== 3. Subiendo imágenes al registro corporativo en la nube ==="
+        echo "=== 3. Subiendo imágenes a ACR ==="
         docker push $IMAGE_NAME:$UNIQUE_TAG
         docker push $IMAGE_NAME:$ENV_TAG
       displayName: 'Empaquetar y Almacenar Contenedor en Azure'
@@ -132,6 +140,7 @@ stages:
         DOCKERFILE_PATH: $(dockerfilePath)
 
     # [ESTANDARIZACIÓN 2]: Generación del artefacto de texto inmutable
+    # 3. Generación del artefacto de metadata inmutable
     - bash: |
         set -euo pipefail
         mkdir -p $(Build.ArtifactStagingDirectory)/deploy-info
@@ -140,6 +149,7 @@ stages:
       displayName: 'Generar metadata de despliegue'
 
     # [ESTANDARIZACIÓN 3]: Publicación para el CD
+    # 4. Publicación para consumo del Release CD
     - task: PublishBuildArtifacts@1
       inputs:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)/deploy-info'
@@ -147,6 +157,7 @@ stages:
       displayName: 'Publicar artefacto deploy-info'
 
     # [ESTANDARIZACIÓN 4]: Limpieza de sesión
+    # 5. Cierre de sesión seguro en Docker
     - bash: |
         docker logout dockermg-g9hrgcc4etdrh8eg.azurecr.io || true
       displayName: 'Cerrar sesión de ACR'
