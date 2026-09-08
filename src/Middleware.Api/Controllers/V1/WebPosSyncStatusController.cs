@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using Middleware.Api.Controllers.V1.Queries;
 using Middleware.Application.Dtos.Responses;
 using Middleware.Application.UseCases.WebPos;
 
@@ -54,21 +55,9 @@ public sealed class WebPosSyncStatusController : ControllerBase
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> List(
-        [FromQuery] string? status,
-        [FromQuery] string? docType,
-        [FromQuery] string? rejectionType,
-        [FromQuery] int? docEntry,
-        [FromQuery] int? docNum,
-        [FromQuery] DateTime? from,
-        [FromQuery] DateTime? to,
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken cancellationToken = default)
+    public async Task<IActionResult> List([FromQuery] WebPosSyncStatusListQuery query, CancellationToken cancellationToken)
     {
-        var result = await _useCase.ListAsync(
-            new WebPosSyncStatusQuery(status, docType, rejectionType, docEntry, docNum, from, to, page, pageSize),
-            cancellationToken);
+        var result = await _useCase.ListAsync(query.ToQuery(), cancellationToken);
 
         return Ok(new
         {

@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using Middleware.Api.Controllers.V1.Queries;
 using Middleware.Application.Abstractions;
 
 namespace Middleware.Api.Controllers.V1;
@@ -31,26 +32,17 @@ public sealed class ApiLogsController : ControllerBase
     /// </summary>
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<IActionResult> List(
-        [FromQuery] string? endpoint,
-        [FromQuery] string? usuario,
-        [FromQuery] int? statusCode,
-        [FromQuery] bool onlyErrors = false,
-        [FromQuery] DateTime? from = null,
-        [FromQuery] DateTime? to = null,
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken cancellationToken = default)
+    public async Task<IActionResult> List([FromQuery] ApiLogsListQuery query, CancellationToken cancellationToken)
     {
         var filter = new ApiLogFilter(
-            string.IsNullOrWhiteSpace(endpoint) ? null : endpoint.Trim(),
-            string.IsNullOrWhiteSpace(usuario) ? null : usuario.Trim(),
-            statusCode,
-            onlyErrors,
-            from,
-            to,
-            Math.Max(page, 1),
-            Math.Clamp(pageSize, 1, MaxPageSize));
+            string.IsNullOrWhiteSpace(query.Endpoint) ? null : query.Endpoint.Trim(),
+            string.IsNullOrWhiteSpace(query.Usuario) ? null : query.Usuario.Trim(),
+            query.StatusCode,
+            query.OnlyErrors,
+            query.From,
+            query.To,
+            Math.Max(query.Page, 1),
+            Math.Clamp(query.PageSize, 1, MaxPageSize));
 
         var result = await _repository.ListAsync(filter, cancellationToken);
 
