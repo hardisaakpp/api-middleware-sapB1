@@ -139,21 +139,32 @@ public sealed class GetWebPosSyncStatusUseCase
         var current = entry;
         try
         {
+            // 1) Bitácora: la petición que creó el documento (sin depender de SAP).
             var trace = await _apiLog.FindDocumentTraceAsync(entry.DocType, entry.DocEntry, ct);
+            var docNum = trace?.DocNum;
+            IReadOnlyList<string> codes = trace?.WarehouseCodes ?? [];
 
-            if (current.DocNum is null)
+            // 2) SAP: el documento mismo, si a la bitácora le falta el número o los almacenes
+            //    (p. ej. peticiones cuyo cuerpo no quedó registrado).
+            if ((current.DocNum is null && docNum is null) || (current.Warehouses.Count == 0 && codes.Count == 0))
             {
-                var docNum = trace?.DocNum ?? await ReadDocNumFromSapAsync(current, ct);
-                if (docNum is not null)
+                var fromSap = await ReadDocumentFromSapAsync(current, ct);
+                docNum ??= fromSap?.DocNum;
+                if (codes.Count == 0 && fromSap is not null)
                 {
-                    await _repository.UpdateDocNumAsync(current.DocType, current.DocEntry, docNum.Value, ct);
-                    current = current with { DocNum = docNum };
+                    codes = fromSap.WarehouseCodes;
                 }
             }
 
-            if (current.Warehouses.Count == 0 && trace is { WarehouseCodes.Count: > 0 })
+            if (current.DocNum is null && docNum is not null)
             {
-                var warehouses = await ResolveWarehousesAsync(current.DocType, trace.WarehouseCodes, ct);
+                await _repository.UpdateDocNumAsync(current.DocType, current.DocEntry, docNum.Value, ct);
+                current = current with { DocNum = docNum };
+            }
+
+            if (current.Warehouses.Count == 0 && codes.Count > 0)
+            {
+                var warehouses = await ResolveWarehousesAsync(current.DocType, codes, ct);
                 if (warehouses is not null)
                 {
                     await _repository.UpdateWarehousesAsync(current.DocType, current.DocEntry, warehouses, ct);
@@ -169,17 +180,27 @@ public sealed class GetWebPosSyncStatusUseCase
         return current;
     }
 
-    private async Task<int?> ReadDocNumFromSapAsync(PosSyncStatusEntry entry, CancellationToken ct)
+    /// <summary>DocNum y almacenes leídos del documento en SAP; null si SAP no responde o el documento no existe.</summary>
+    private async Task<ApiLogDocumentTrace?> ReadDocumentFromSapAsync(PosSyncStatusEntry entry, CancellationToken ct)
     {
         try
         {
-            return entry.DocType == PosSyncDocTypes.GoodsReceipt
-                ? (await _sapGateway.GetGoodsReceiptAsync(entry.DocEntry, ct))?.DocNum
-                : (await _sapGateway.GetStockTransferForTestCompanyAsync(entry.DocEntry, ct))?.DocNum;
+            if (entry.DocType == PosSyncDocTypes.GoodsReceipt)
+            {
+                var receipt = await _sapGateway.GetGoodsReceiptAsync(entry.DocEntry, ct);
+                return receipt is null
+                    ? null
+                    : new ApiLogDocumentTrace(receipt.DocNum, receipt.Lines.Select(l => l.WarehouseCode).Distinct(StringComparer.OrdinalIgnoreCase).ToList());
+            }
+
+            var transfer = await _sapGateway.GetStockTransferForTestCompanyAsync(entry.DocEntry, ct);
+            return transfer is null
+                ? null
+                : new ApiLogDocumentTrace(transfer.DocNum, new[] { transfer.FromWarehouse, transfer.ToWarehouse }.Distinct(StringComparer.OrdinalIgnoreCase).ToList());
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "SAP no respondió al leer el DocNum de {DocType} DocEntry={DocEntry}.", entry.DocType, entry.DocEntry);
+            _logger.LogWarning(ex, "SAP no respondió al leer {DocType} DocEntry={DocEntry}.", entry.DocType, entry.DocEntry);
             return null;
         }
     }
