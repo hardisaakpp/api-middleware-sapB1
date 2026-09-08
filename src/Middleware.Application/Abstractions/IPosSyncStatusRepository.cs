@@ -1,22 +1,25 @@
+using Middleware.Application.Dtos.Responses;
+
 namespace Middleware.Application.Abstractions;
 
 /// <summary>
 /// Trazabilidad de la integración de stock a WEBPOS/HITELL por documento SAP. La clave es
 /// (docType, docEntry) porque los DocEntry de StockTransfers (OWTR) y de PurchaseDeliveryNotes
-/// (OPDN) son secuencias independientes en SAP y pueden colisionar entre sí.
+/// (OPDN) son secuencias independientes en SAP y pueden colisionar entre sí. <c>docNum</c> es el
+/// número visible del documento en SAP, que es por el que busca el usuario de soporte.
 /// </summary>
 public interface IPosSyncStatusRepository
 {
-    Task UpsertAsync(string docType, int docEntry, string status, string? reason, CancellationToken ct = default);
+    Task UpsertAsync(string docType, int docEntry, int? docNum, string status, string? reason, CancellationToken ct = default);
 
     Task<PosSyncStatusEntry?> GetAsync(string docType, int docEntry, CancellationToken ct = default);
 
     /// <summary>
-    /// Lista entradas filtrando opcionalmente por estado y/o tipo de documento, más reciente
-    /// primero — pensado para que el cliente (Nexus) muestre las pendientes de reintegración
-    /// (REJECTED) y dispare el retry correspondiente.
+    /// Listado paginado, más reciente primero (por última actualización), filtrando opcionalmente
+    /// por estado, tipo de documento, DocEntry, DocNum y rango de fechas — pensado para la
+    /// pestaña HITELL del módulo Integraciones de Nexus.
     /// </summary>
-    Task<IReadOnlyList<PosSyncStatusEntry>> ListAsync(string? status, string? docType, int top, CancellationToken ct = default);
+    Task<PagedResult<PosSyncStatusEntry>> ListAsync(PosSyncStatusFilter filter, CancellationToken ct = default);
 }
 
 /// <summary>Tipos de documento rastreados en pos_sync_status.</summary>
@@ -29,9 +32,21 @@ public static class PosSyncDocTypes
     public const string GoodsReceipt = "GR";
 }
 
+/// <summary>Filtros del listado de pos_sync_status. Las fechas acotan la última actualización (o la creación si nunca se actualizó).</summary>
+public sealed record PosSyncStatusFilter(
+    string? Status,
+    string? DocType,
+    int? DocEntry,
+    int? DocNum,
+    DateTime? From,
+    DateTime? To,
+    int Page,
+    int PageSize);
+
 public sealed record PosSyncStatusEntry(
     string DocType,
     int DocEntry,
+    int? DocNum,
     string Status,
     string? Reason,
     int Attempts,

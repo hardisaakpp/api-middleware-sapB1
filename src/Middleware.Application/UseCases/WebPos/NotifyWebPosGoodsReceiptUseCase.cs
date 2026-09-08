@@ -50,7 +50,7 @@ public sealed class NotifyWebPosGoodsReceiptUseCase : IUseCase<NotifyWebPosGoods
             _logger.LogInformation(
                 "GoodsReceipt DocEntry={DocEntry}: ninguna bodega receptora está en WEBPOS (U_WEBPOS) — se omite la notificación",
                 request.DocEntry);
-            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.GoodsReceipt, request.DocEntry, "SKIPPED_NOT_POS", null, cancellationToken);
+            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.GoodsReceipt, request.DocEntry, request.DocNum, "SKIPPED_NOT_POS", null, cancellationToken);
             return new WebPosSyncInfo(WebPosSyncStatus.SkippedNotPos);
         }
 
@@ -82,12 +82,12 @@ public sealed class NotifyWebPosGoodsReceiptUseCase : IUseCase<NotifyWebPosGoods
             _logger.LogWarning(
                 "GoodsReceipt DocEntry={DocEntry}: WEBPOS rechazó {Count} actualización(es) — {Reason}",
                 request.DocEntry, rejectionReasons.Count, reason);
-            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.GoodsReceipt, request.DocEntry, "REJECTED", reason, cancellationToken);
+            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.GoodsReceipt, request.DocEntry, request.DocNum, "REJECTED", reason, cancellationToken);
             return new WebPosSyncInfo(WebPosSyncStatus.Rejected, reason);
         }
 
         _logger.LogInformation("GoodsReceipt DocEntry={DocEntry}: stock sincronizado en WEBPOS correctamente", request.DocEntry);
-        await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.GoodsReceipt, request.DocEntry, "SYNCED", null, cancellationToken);
+        await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.GoodsReceipt, request.DocEntry, request.DocNum, "SYNCED", null, cancellationToken);
         return new WebPosSyncInfo(WebPosSyncStatus.Synced);
     }
 

@@ -60,11 +60,89 @@ Consulta el estado de un job encolado.
 
 `status` es uno de: `ENCOLADO` (esperando o reintentando), `PROCESANDO` (intentando ahora mismo), `COMPLETADO` o `ERROR`. Mientras está `ENCOLADO`/`PROCESANDO`, `result` es `null`. Si termina en `ERROR`, `error` trae el motivo y `result` es `null`.
 
+El detalle incluye además `requestType` (handler que lo procesa) y `request` (el payload que se envió
+a SAP, ya parseado), para que soporte pueda ver exactamente qué se intentó integrar.
+
 **Códigos de error**
 
 | Status | Cuándo |
 |---|---|
 | `404 Not Found` | El `jobId` no existe |
+
+### GET /jobs
+
+Listado paginado de la cola, más reciente primero, **sin** `request` ni `result` (usar
+`GET /jobs/{jobId}` para el detalle). Es la vista "Cola SAP" del módulo Integraciones de Nexus.
+
+Query params opcionales: `status` (`ENCOLADO` \| `PROCESANDO` \| `COMPLETADO` \| `ERROR`),
+`endpoint` (búsqueda por contenido, p. ej. `stock-transfers`), `from` / `to` (sobre `createdAt`,
+inclusivos), `page` (default 1) y `pageSize` (default 20, máx 200).
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "items": [
+    {
+      "jobId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "endpoint": "POST /api/v1/liquidaciones",
+      "requestType": "CreateLiquidacion",
+      "status": "ERROR",
+      "httpStatusCode": 503,
+      "request": null,
+      "result": null,
+      "error": "SAP saturado: se agotaron los reintentos.",
+      "attempts": 5,
+      "createdAt": "2026-09-07T10:15:00",
+      "updatedAt": "2026-09-07T10:23:47"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | `status` no es uno de los cuatro valores |
+
+---
+
+## Bitácora de peticiones (api_log)
+
+Cada petición al middleware (salvo `/health`, `/swagger` y las propias consultas de soporte:
+`/api-logs`, `/jobs`, `/webpos/sync-status`) queda registrada en `sc_middleware.dbo.api_log` por
+`ApiLogMiddleware`: endpoint, cuerpo enviado, respuesta (solo en errores o métodos distintos de
+GET), usuario, status HTTP y duración. Los cuerpos se truncan a 2000 caracteres. `fecha` está en
+**hora local de Ecuador (UTC-5)**, no en UTC. Índices recomendados: `sql/create_api_log_indexes.sql`.
+
+### GET /api-logs
+
+Listado paginado, más reciente primero, **sin** `request` ni `response`.
+
+Query params opcionales: `endpoint` (contiene), `usuario` (contiene), `statusCode` (exacto),
+`onlyErrors` (`true` deja solo `statusCode >= 400`), `from` / `to` (sobre `fecha`), `page`
+(default 1) y `pageSize` (default 20, máx 200).
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "items": [
+    { "id": 8812, "endpoint": "POST /api/v1/stock-transfers/direct", "fecha": "2026-09-07T10:15:00", "usuario": "system", "statusCode": 201, "duracionMs": 850, "request": null, "response": null }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+### GET /api-logs/{id}
+
+Misma forma que cada item del listado, con `request` y `response` cargados. `404` si el id no existe.
 
 ---
 
@@ -550,9 +628,14 @@ Cada notificación (creación o retry, transferencia o entrada) deja su resultad
 | `SKIPPED_NOT_POS` | **No corresponde integración** — ninguna bodega del documento está habilitada para WEBPOS |
 | `REJECTED` | **Rechazado** — HITELL rechazó (típicamente producto no creado/migrado); `reason` trae el mensaje. Corregir en HITELL y reintegrar con el endpoint retry hasta llegar a `SYNCED`/`SKIPPED_NOT_POS` |
 
-`attempts` cuenta las veces que se intentó la integración del documento. DDL en
-`sql/create_pos_sync_status.sql` (ambientes nuevos) y `sql/alter_pos_sync_status_add_doc_type.sql`
-(migración desde la versión sin `doc_type`).
+`attempts` cuenta las veces que se intentó la integración del documento; `doc_num` es el número
+visible del documento en SAP. DDL en `sql/create_pos_sync_status.sql` (ambientes nuevos),
+`sql/alter_pos_sync_status_add_doc_type.sql` (migración desde la versión sin `doc_type`) y
+`sql/alter_pos_sync_status_add_doc_num.sql` (migración desde la versión sin `doc_num`).
+
+⚠️ Verificado el 2026-09-07: en la base de producción (`sc_middleware` en 192.168.2.211) la tabla
+**no existía** — el paso a producción de HITELL no corrió el script. Hasta crearla, los estados de
+integración no se guardan y `GET /webpos/sync-status` responde 500.
 
 ### GET /webpos/sync-status/{docType}/{docEntry}
 
@@ -606,21 +689,34 @@ invocar `rejection.retryEndpoint` y volver a consultar hasta que `result` sea `I
 
 ### GET /webpos/sync-status
 
-Lista estados con la misma forma que el endpoint puntual, más reciente primero. Query params
-opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`), `docType` (`ST` \| `GR`),
-`rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica `status=REJECTED`) y `top` (default 100,
-máx 500).
+Listado **paginado** con la misma forma que el endpoint puntual, más reciente primero (por última
+actualización). Query params opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`),
+`docType` (`ST` \| `GR`), `rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica
+`status=REJECTED`), `docNum` (número de documento SAP, lo que ve el usuario), `docEntry`,
+`from` / `to` (sobre la última actualización, inclusivos), `page` (default 1) y `pageSize`
+(default 20, máx 200).
 
-Usos típicos del cliente (Nexus):
+Usos típicos del cliente (Nexus, módulo Integraciones → pestaña HITELL, que por defecto pide los
+últimos 15 días):
 
-- `?status=REJECTED` — bandeja de documentos pendientes de reintegración.
-- `?rejectionType=PRODUCTO_NO_EXISTE` — qué productos hay que crear en HITELL; `rejection.items[].itemCode` da el listado.
+- `?status=REJECTED&from=...&to=...` — bandeja de documentos pendientes de reintegración; el botón "Reintegrar" llama a `rejection.retryEndpoint`.
+- `?rejectionType=PRODUCTO_NO_EXISTE` — qué productos hay que crear en HITELL; `rejection.items[].itemCode` da el listado. Como el tipo de rechazo se deduce del texto de HITELL, este filtro se resuelve en memoria sobre los rechazados del rango (máx. 2000).
+- `?docNum=1065` — buscar un documento por su número SAP sin conocer su tipo.
 
 **Respuesta — 200 OK**
 
 ```json
-{ "entries": [ { "docType": "ST", "docEntry": 587065, "status": "REJECTED", "result": "RECHAZADO", "rejection": { "type": "PRODUCTO_NO_EXISTE", "...": "..." } } ] }
+{
+  "entries": [ { "docType": "ST", "docEntry": 587065, "docNum": 1065, "status": "REJECTED", "result": "RECHAZADO", "rejection": { "type": "PRODUCTO_NO_EXISTE", "...": "..." } } ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
 ```
+
+`docNum` se guarda desde esta versión (columna `doc_num`, ver `sql/alter_pos_sync_status_add_doc_num.sql`
+para ambientes donde la tabla ya existía); las filas anteriores lo traen `null` hasta su próximo reintento.
 
 ---
 

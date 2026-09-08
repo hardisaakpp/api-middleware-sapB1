@@ -39,7 +39,7 @@ Máximo **5 reintentos** (`JobQueue:MaxRetryAttempts` en `appsettings.json`), co
 
 ## Operaciones manuales sobre un job encolado
 
-Hoy **no existen** — ni cancelar, ni forzar un reintento inmediato, ni pausar. Una vez que un job queda `ENCOLADO`, sigue su ciclo automático de reintentos hasta terminar en `COMPLETADO` o `ERROR`, sin intervención posible. Lo único disponible es lectura: `GET /api/v1/jobs/{jobId}`.
+Hoy **no existen** — ni cancelar, ni forzar un reintento inmediato, ni pausar. Una vez que un job queda `ENCOLADO`, sigue su ciclo automático de reintentos hasta terminar en `COMPLETADO` o `ERROR`, sin intervención posible. Lo único disponible es lectura: `GET /api/v1/jobs/{jobId}` (detalle con payload y resultado) y `GET /api/v1/jobs` (listado paginado con filtros por estado, endpoint y fechas, que es lo que muestra la pestaña "Cola SAP" del módulo Integraciones de Nexus).
 
 Si se necesitan a futuro, son 3 endpoints separados, cada uno con una decisión de diseño pendiente:
 
