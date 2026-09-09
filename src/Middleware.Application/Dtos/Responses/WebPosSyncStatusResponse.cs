@@ -6,6 +6,8 @@ public static class WebPosIntegrationResults
     public const string Integrated = "INTEGRADO";
     public const string NotApplicable = "NO_CORRESPONDE";
     public const string Rejected = "RECHAZADO";
+    /// <summary>The notification never reached WEBPOS (connection, configuration, timeout): nothing was rejected, it must be re-sent.</summary>
+    public const string Error = "ERROR";
 }
 
 /// <summary>Why HITELL rejected a document, reduced to what the client can act on.</summary>

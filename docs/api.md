@@ -627,6 +627,7 @@ Cada notificación (creación o retry, transferencia o entrada) deja su resultad
 | `SYNCED` | **Integrado** — HITELL aceptó la actualización de stock |
 | `SKIPPED_NOT_POS` | **No corresponde integración** — ninguna bodega del documento está habilitada para WEBPOS |
 | `REJECTED` | **Rechazado** — HITELL rechazó (típicamente producto no creado/migrado); `reason` trae el mensaje. Corregir en HITELL y reintegrar con el endpoint retry hasta llegar a `SYNCED`/`SKIPPED_NOT_POS` |
+| `ERROR` | **Error de envío** — la notificación nunca llegó a HITELL (WEBPOS caído, login fallido, `WebPos:BaseUrl` mal configurada, timeout). No es un rechazo: `reason` trae el error técnico. Reintegrar con el endpoint retry cuando la causa esté resuelta |
 
 `attempts` cuenta las veces que se intentó la integración del documento; `doc_num` es el número
 visible del documento en SAP. DDL en `sql/create_pos_sync_status.sql` (ambientes nuevos),
@@ -667,8 +668,8 @@ tiene que conocer los textos de HITELL. `docType`: `ST` o `GR` (case-insensitive
 
 | Campo | Significado |
 |---|---|
-| `status` | Valor persistido: `SYNCED` \| `SKIPPED_NOT_POS` \| `REJECTED` |
-| `result` | Lectura de negocio para mostrar: `INTEGRADO` \| `NO_CORRESPONDE` \| `RECHAZADO` |
+| `status` | Valor persistido: `SYNCED` \| `SKIPPED_NOT_POS` \| `REJECTED` \| `ERROR` |
+| `result` | Lectura de negocio para mostrar: `INTEGRADO` \| `NO_CORRESPONDE` \| `RECHAZADO` \| `ERROR` |
 | `reason` | Texto crudo de HITELL (`ITEM (negocio): mensaje`, varios separados por ` \| `). Solo informativo |
 | `rejection` | Solo cuando `result = RECHAZADO`; `null` en los demás casos |
 | `rejection.type` | `PRODUCTO_NO_EXISTE` cuando **todos** los ítems rechazados no existen en HITELL para ese negocio (HITELL responde `El producto no existe.` o `No entity found for query`). `OTRO` para cualquier otro rechazo |
@@ -690,7 +691,7 @@ invocar `rejection.retryEndpoint` y volver a consultar hasta que `result` sea `I
 ### GET /webpos/sync-status
 
 Listado **paginado** con la misma forma que el endpoint puntual, más reciente primero (por última
-actualización). Query params opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`),
+actualización). Query params opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS` \| `ERROR`),
 `docType` (`ST` \| `GR`), `rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica
 `status=REJECTED`), `docNum` (número de documento SAP, lo que ve el usuario), `docEntry`,
 `from` / `to` (sobre la última actualización, inclusivos), `page` (default 1) y `pageSize`
