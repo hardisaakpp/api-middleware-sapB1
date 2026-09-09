@@ -18,13 +18,34 @@ namespace Middleware.Application.WebPos;
 public sealed class WebPosGoodsReceiptNotifier : IWebPosGoodsReceiptNotifier
 {
     private readonly IJobExecutionCoordinator _jobCoordinator;
+    private readonly IPosSyncStatusRepository _posSyncStatusRepository;
     private readonly ILogger<WebPosGoodsReceiptNotifier> _logger;
 
-    public WebPosGoodsReceiptNotifier(IJobExecutionCoordinator jobCoordinator, ILogger<WebPosGoodsReceiptNotifier> logger)
+    public WebPosGoodsReceiptNotifier(IJobExecutionCoordinator jobCoordinator, IPosSyncStatusRepository posSyncStatusRepository, ILogger<WebPosGoodsReceiptNotifier> logger)
     {
         _jobCoordinator = jobCoordinator;
+        _posSyncStatusRepository = posSyncStatusRepository;
         _logger = logger;
     }
+
+    /// <summary>
+    /// A notification that blew up (WEBPOS down, login failed, wrong BaseUrl, timeout) used to leave
+    /// no trace in pos_sync_status, so support saw neither "integrado" nor "rechazado" — exactly
+    /// what happened in production on 2026-09-09. Recording ERROR makes it visible and retryable.
+    /// </summary>
+    private async Task RecordErrorAsync(int docEntry, int docNum, string reason, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.GoodsReceipt, docEntry, docNum, "ERROR", Truncate(reason), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "No se pudo registrar el estado ERROR de WEBPOS para DocEntry={DocEntry}", docEntry);
+        }
+    }
+
+    private static string Truncate(string value) => value.Length <= 900 ? value : value[..900] + "…";
 
     public async Task<WebPosSyncInfo> NotifyAsync(
         int docEntry,
@@ -54,6 +75,7 @@ public sealed class WebPosGoodsReceiptNotifier : IWebPosGoodsReceiptNotifier
         catch (Exception ex)
         {
             _logger.LogError(ex, "Notificación a WEBPOS falló para GoodsReceipt DocEntry={DocEntry} — la entrada en SAP ya está creada y no se ve afectada", docEntry);
+            await RecordErrorAsync(docEntry, docNum, ex.Message, cancellationToken);
             return new WebPosSyncInfo(WebPosSyncStatus.Error, ex.Message);
         }
     }

@@ -22,7 +22,7 @@ public sealed class GetWebPosSyncStatusUseCase
     private const int MaxRejectedScanned = 2000;
 
     private static readonly string[] ValidDocTypes = [PosSyncDocTypes.StockTransfer, PosSyncDocTypes.GoodsReceipt];
-    private static readonly string[] ValidStatuses = ["SYNCED", "REJECTED", "SKIPPED_NOT_POS"];
+    private static readonly string[] ValidStatuses = ["SYNCED", "REJECTED", "SKIPPED_NOT_POS", "ERROR"];
     private static readonly string[] ValidRejectionTypes = [WebPosRejectionTypes.ProductNotFound, WebPosRejectionTypes.Other];
 
     private readonly IPosSyncStatusRepository _repository;
@@ -55,7 +55,7 @@ public sealed class GetWebPosSyncStatusUseCase
         if (!string.IsNullOrWhiteSpace(query.Status))
         {
             normalizedStatus = Array.Find(ValidStatuses, s => s.Equals(query.Status.Trim(), StringComparison.OrdinalIgnoreCase))
-                ?? throw new ArgumentException($"status inválido: '{query.Status}'. Valores aceptados: SYNCED, REJECTED, SKIPPED_NOT_POS.");
+                ?? throw new ArgumentException($"status inválido: '{query.Status}'. Valores aceptados: SYNCED, REJECTED, SKIPPED_NOT_POS, ERROR.");
         }
 
         string? normalizedRejectionType = null;
@@ -97,14 +97,38 @@ public sealed class GetWebPosSyncStatusUseCase
         {
             "SYNCED" => WebPosIntegrationResults.Integrated,
             "SKIPPED_NOT_POS" => WebPosIntegrationResults.NotApplicable,
+            "ERROR" => WebPosIntegrationResults.Error,
             _ => WebPosIntegrationResults.Rejected
         };
 
-        var rejection = result == WebPosIntegrationResults.Rejected ? BuildRejection(entry) : null;
+        var rejection = result switch
+        {
+            WebPosIntegrationResults.Rejected => BuildRejection(entry),
+            WebPosIntegrationResults.Error => BuildError(entry),
+            _ => null
+        };
 
         return new WebPosSyncStatusResponse(
             entry.DocType, entry.DocEntry, entry.DocNum, entry.Status, result, entry.Reason,
             entry.Attempts, entry.CreatedAt, entry.UpdatedAt, rejection);
+    }
+
+    /// <summary>
+    /// ERROR is not a HITELL rejection: the stock update never got through (WEBPOS down, login
+    /// failed, wrong BaseUrl, timeout). Support only needs to re-send once the cause is fixed.
+    /// </summary>
+    private static WebPosRejectionDetail BuildError(PosSyncStatusEntry entry)
+    {
+        var description = "No se pudo enviar a HITELL (error de conexión o configuración, no un rechazo): " +
+                          (string.IsNullOrWhiteSpace(entry.Reason) ? "sin detalle" : entry.Reason) +
+                          ". Reintegrar cuando el servicio esté disponible.";
+        return new WebPosRejectionDetail(WebPosRejectionTypes.Other, description, [], RetryEndpoint(entry));
+    }
+
+    private static string RetryEndpoint(PosSyncStatusEntry entry)
+    {
+        var resource = entry.DocType == PosSyncDocTypes.GoodsReceipt ? "goods-receipts" : "stock-transfers";
+        return $"/api/v1/webpos/{resource}/{entry.DocEntry}/retry";
     }
 
     private static WebPosRejectionDetail BuildRejection(PosSyncStatusEntry entry)
@@ -116,8 +140,7 @@ public sealed class GetWebPosSyncStatusUseCase
             ? $"Producto no creado en HITELL: {string.Join(", ", items.Select(i => i.ItemCode ?? "?").Distinct())}. Crear el producto en HITELL y reintegrar."
             : "HITELL rechazó la actualización de stock. Revisar el mensaje por ítem, corregir en HITELL y reintegrar.";
 
-        var resource = entry.DocType == PosSyncDocTypes.GoodsReceipt ? "goods-receipts" : "stock-transfers";
-        return new WebPosRejectionDetail(type, description, items, $"/api/v1/webpos/{resource}/{entry.DocEntry}/retry");
+        return new WebPosRejectionDetail(type, description, items, RetryEndpoint(entry));
     }
 }
 
