@@ -410,8 +410,63 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "PurchaseDeliveryNotes", payload, ct);
-        return ParseDocumentResult(json);
+        try
+        {
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "PurchaseDeliveryNotes", payload, ct);
+            return ParseDocumentResult(json);
+        }
+        catch (TimeoutRejectedException) when (!string.IsNullOrEmpty(request.Comments))
+        {
+            _logger.LogWarning( // NOSONAR
+                "SAP POST PurchaseDeliveryNotes timed out for VendorCode={VendorCode}, Comments='{Comments}'. Checking for orphaned goods receipt...",
+                request.VendorCode, request.Comments);
+
+            var recovered = await TryRecoverOrphanedGoodsReceiptAsync(request.VendorCode, request.Comments, ct);
+            if (recovered is not null)
+            {
+                _logger.LogWarning( // NOSONAR
+                    "Recovered orphaned GoodsReceipt: DocEntry={DocEntry}, DocNum={DocNum}, Comments='{Comments}'",
+                    recovered.DocEntry, recovered.DocNum, request.Comments);
+                return recovered;
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<DocumentCreatedResult?> TryRecoverOrphanedGoodsReceiptAsync(string vendorCode, string comments, CancellationToken ct)
+    {
+        try
+        {
+            var escapedComments = comments.Replace("'", "''");
+            var resource = $"PurchaseDeliveryNotes?$filter=CardCode eq '{vendorCode}' and Comments eq '{escapedComments}'&$select=DocEntry,DocNum&$orderby=DocEntry desc&$top=1";
+
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
+            {
+                return null;
+            }
+
+            foreach (var item in arr.EnumerateArray())
+            {
+                if (item.TryGetProperty(DocEntryProperty, out var de) && de.TryGetInt32(out var docEntry) && // NOSONAR
+                    item.TryGetProperty(DocNumProperty, out var dn) && dn.TryGetInt32(out var docNum)) // NOSONAR
+                {
+                    return new DocumentCreatedResult(docEntry, docNum);
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Could not query SAP for orphaned goods receipt — VendorCode={VendorCode}, Comments='{Comments}'",
+                vendorCode, comments);
+            return null;
+        }
     }
 
     public async Task<DocumentCreatedResult> CreatePurchaseOrderAsync(CreatePurchaseOrderRequest request, CancellationToken ct = default)
