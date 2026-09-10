@@ -84,9 +84,10 @@ internal sealed class WebPosGateway : IWebPosGateway
         try
         {
             var token = await _sessionManager.GetTokenAsync(ct);
+            string content;
             try
             {
-                return await _client.SendAsync(method, resource, payload, token, ct);
+                content = await _client.SendAsync(method, resource, payload, token, ct);
             }
             catch (WebPosException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized)
             {
@@ -95,6 +96,18 @@ internal sealed class WebPosGateway : IWebPosGateway
                 var newToken = await _sessionManager.GetTokenAsync(ct);
                 return await _client.SendAsync(method, resource, payload, newToken, ct);
             }
+
+            // WEBPOS reports an expired/invalid token as HTTP 400 with a business-style body, not
+            // as 401, so the cached token would otherwise be reused until its computed expiry.
+            if (WebPosResponses.IsTokenRejected(content))
+            {
+                _logger.LogWarning("WEBPOS reported an invalid/expired token for {Resource}. Invalidating session and retrying once.", resource); // NOSONAR
+                await _sessionManager.InvalidateAsync(ct);
+                var newToken = await _sessionManager.GetTokenAsync(ct);
+                content = await _client.SendAsync(method, resource, payload, newToken, ct);
+            }
+
+            return content;
         }
         finally
         {

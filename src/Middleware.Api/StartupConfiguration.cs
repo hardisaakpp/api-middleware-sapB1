@@ -26,17 +26,16 @@ internal static class StartupConfiguration
                 .Enrich.WithThreadId()
                 .Enrich.WithProperty("Application", "Middleware.Api")
                 .Enrich.WithProperty("Environment", ctx.HostingEnvironment.EnvironmentName)
+                // Console always: in the container this is what `docker logs` shows. Until 2026-09-09
+                // production wrote only to logs/ (unwritable for the non-root app user), so the
+                // HITELL incident left no trace at all.
+                .WriteTo.Console(formatter)
                 .WriteTo.File(
                     formatter,
                     path: "logs/middleware-.json",
                     rollingInterval: RollingInterval.Day,
                     retainedFileCountLimit: isDev ? 7 : 30,
                     shared: true);
-
-            if (isDev)
-            {
-                config.WriteTo.Console(formatter);
-            }
         });
     }
 

@@ -12,11 +12,12 @@ namespace Middleware.UnitTests.WebPos;
 public sealed class WebPosStockTransferNotifierTests
 {
     private readonly Mock<IJobExecutionCoordinator> _jobCoordinatorMock = new();
+    private readonly Mock<IPosSyncStatusRepository> _posSyncStatusMock = new();
     private readonly WebPosStockTransferNotifier _sut;
 
     public WebPosStockTransferNotifierTests()
     {
-        _sut = new WebPosStockTransferNotifier(_jobCoordinatorMock.Object, NullLogger<WebPosStockTransferNotifier>.Instance);
+        _sut = new WebPosStockTransferNotifier(_jobCoordinatorMock.Object, _posSyncStatusMock.Object, NullLogger<WebPosStockTransferNotifier>.Instance);
     }
 
     private static IReadOnlyList<NotifyWebPosStockTransferLine> Lines() => [new NotifyWebPosStockTransferLine("ITEM001", 5m)];

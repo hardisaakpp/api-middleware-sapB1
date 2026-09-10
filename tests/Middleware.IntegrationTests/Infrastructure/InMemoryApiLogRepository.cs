@@ -47,4 +47,17 @@ internal sealed class InMemoryApiLogRepository : IApiLogRepository
 
     public Task<ApiLogRecord?> GetByIdAsync(long id, CancellationToken ct = default)
         => Task.FromResult(_rows.TryGetValue(id, out var row) ? row : null);
+
+    public Task<ApiLogDocumentTrace?> FindDocumentTraceAsync(string docType, int docEntry, CancellationToken ct = default)
+    {
+        var prefix = docType == PosSyncDocTypes.GoodsReceipt ? "POST /api/v1/goods-receipts" : "POST /api/v1/stock-transfers";
+        var row = _rows.Values
+            .Where(r => r.Endpoint.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                        && r.StatusCode is >= 200 and < 300
+                        && (r.Response ?? string.Empty).Contains($"\"docEntry\":{docEntry},", StringComparison.Ordinal))
+            .OrderByDescending(r => r.Id)
+            .FirstOrDefault();
+
+        return Task.FromResult(row is null ? null : ApiLogDocumentTraceParser.Parse(docType, row.Request, row.Response));
+    }
 }
