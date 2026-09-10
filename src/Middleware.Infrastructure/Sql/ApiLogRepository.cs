@@ -101,6 +101,40 @@ internal sealed class ApiLogRepository : IApiLogRepository
         return new PagedResult<ApiLogRecord>(items, total, filter.Page, filter.PageSize);
     }
 
+    public async Task<ApiLogDocumentTrace?> FindDocumentTraceAsync(string docType, int docEntry, CancellationToken ct = default)
+    {
+        await using var connection = new SqlConnection(_settings.ConnectionString);
+        await connection.OpenAsync(ct);
+
+        // La respuesta del middleware siempre serializa camelCase sin espacios: {"docEntry":587092,"docNum":...}.
+        var endpointPrefix = docType == PosSyncDocTypes.GoodsReceipt
+            ? "POST /api/v1/goods-receipts%"
+            : "POST /api/v1/stock-transfers%";
+
+        const string sql = """
+            SELECT TOP 1 request, response
+            FROM dbo.api_log
+            WHERE endpoint LIKE @endpointPrefix
+              AND status_code BETWEEN 200 AND 299
+              AND response LIKE @docEntryPattern
+            ORDER BY id DESC
+            """;
+
+        await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 15 };
+        cmd.Parameters.AddWithValue("@endpointPrefix", endpointPrefix);
+        cmd.Parameters.AddWithValue("@docEntryPattern", $"%\"docEntry\":{docEntry},%");
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            return null;
+        }
+
+        var request = reader.IsDBNull(0) ? null : reader.GetString(0);
+        var response = reader.IsDBNull(1) ? null : reader.GetString(1);
+        return ApiLogDocumentTraceParser.Parse(docType, request, response);
+    }
+
     public async Task<ApiLogRecord?> GetByIdAsync(long id, CancellationToken ct = default)
     {
         await using var connection = new SqlConnection(_settings.ConnectionString);
