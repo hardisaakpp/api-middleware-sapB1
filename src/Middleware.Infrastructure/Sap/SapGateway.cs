@@ -47,6 +47,7 @@ internal sealed class SapGateway : ISapGateway
     private const string BarCodeProperty = "BarCode";
     private const string ItemWarehouseInfoCollectionProperty = "ItemWarehouseInfoCollection";
     private const string StockTransfersResource = "StockTransfers";
+    private const string PurchaseDeliveryNotesResource = "PurchaseDeliveryNotes";
 
     public SapGateway(
         ISapSessionManager sessionManager,
@@ -1672,6 +1673,75 @@ internal sealed class SapGateway : ISapGateway
             }
 
             lines.Add(new GoodsReceiptDocumentLine(itemCode, DecimalOrZero(line, QuantityProperty), warehouseCode));
+        }
+
+        return lines;
+    }
+
+    // SAP Service Layer no soporta filtrar PurchaseDeliveryNotes por un campo de su coleccion
+    // hija DocumentLines — probado en vivo contra el sandbox: tanto la sintaxis OData v4
+    // "DocumentLines/any(d:d/BaseEntry eq X)" como "DocumentLines/BaseEntry eq X" devuelven 400
+    // ("Invalid symbol"/"Property ... is invalid"). Se filtra por CardCode (header, si soportado)
+    // y se descartan en C# las lineas cuyo BaseEntry no coincide — mismo patron que
+    // TryRecoverOrphanedGoodsReceiptAsync. $top acotado: los Goods Receipt de una ODC se crean
+    // en una ventana de tiempo corta despues de ella, orderby desc trae los mas recientes primero.
+    public async Task<IReadOnlyList<GoodsReceiptForPurchaseOrderResponse>> GetGoodsReceiptsByBaseEntryAsync(
+        int baseEntry, string vendorCode, CancellationToken ct = default)
+    {
+        var resource = $"{PurchaseDeliveryNotesResource}?$filter=CardCode eq '{vendorCode}'" +
+            "&$select=DocEntry,DocNum,DocDate,DocumentLines&$orderby=DocEntry desc&$top=100";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
+        {
+            return [];
+        }
+
+        var result = new List<GoodsReceiptForPurchaseOrderResponse>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            var lines = ParseGoodsReceiptLinesForBaseEntry(item, baseEntry);
+            if (lines.Count == 0)
+            {
+                continue;
+            }
+
+            result.Add(new GoodsReceiptForPurchaseOrderResponse(
+                IntOrZero(item, DocEntryProperty), IntOrZero(item, DocNumProperty), StringOrEmpty(item, DocDateProperty), lines));
+        }
+
+        return result;
+    }
+
+    // Solo las lineas que efectivamente satisfacen baseEntry — un mismo Goods Receipt puede traer
+    // lineas de otras ODCs.
+    private static List<GoodsReceiptForPurchaseOrderLine> ParseGoodsReceiptLinesForBaseEntry(JsonElement root, int baseEntry)
+    {
+        var lines = new List<GoodsReceiptForPurchaseOrderLine>();
+        if (!root.TryGetProperty(DocumentLinesProperty, out var linesEl) || linesEl.ValueKind != JsonValueKind.Array)
+        {
+            return lines;
+        }
+
+        foreach (var line in linesEl.EnumerateArray())
+        {
+            if (!line.TryGetProperty("BaseEntry", out var beEl) || !beEl.TryGetInt32(out var lineBaseEntry) || lineBaseEntry != baseEntry)
+            {
+                continue;
+            }
+
+            var itemCode = StringOrNull(line, ItemCodeProperty);
+            if (itemCode is null)
+            {
+                continue;
+            }
+
+            var lineNum = line.TryGetProperty("LineNum", out var lnEl) && lnEl.TryGetInt32(out var lnVal) ? lnVal : 0;
+            var baseLine = line.TryGetProperty("BaseLine", out var blEl) && blEl.TryGetInt32(out var blVal) ? blVal : 0;
+
+            lines.Add(new GoodsReceiptForPurchaseOrderLine(lineNum, itemCode, DecimalOrZero(line, QuantityProperty), lineBaseEntry, baseLine));
         }
 
         return lines;

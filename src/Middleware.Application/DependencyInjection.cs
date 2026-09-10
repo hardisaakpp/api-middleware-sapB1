@@ -41,6 +41,7 @@ public static class DependencyInjection
 
         services.AddScoped<CreateDepositUseCase>();
         services.AddScoped<CreateGoodsReceiptUseCase>();
+        services.AddScoped<GetGoodsReceiptsByBaseEntryUseCase>();
         services.AddScoped<CreateLiquidacionUseCase>();
         services.AddScoped<CreatePurchaseOrderUseCase>();
         services.AddScoped<GetPurchaseOrderUseCase>();

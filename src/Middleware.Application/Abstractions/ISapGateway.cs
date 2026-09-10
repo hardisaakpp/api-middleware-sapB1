@@ -156,6 +156,14 @@ public interface ISapGateway
     /// </summary>
     public Task<GoodsReceiptDocumentResponse?> GetGoodsReceiptAsync(int docEntry, CancellationToken ct = default);
 
+    /// <summary>
+    /// Lists every Goods Receipt (PurchaseDeliveryNote) with at least one line whose BaseEntry
+    /// references the given Purchase Order DocEntry — i.e. every receipt created against that PO,
+    /// in full or in part, regardless of which system created it. Only the matching lines are
+    /// returned per document (a receipt can also carry lines from other POs).
+    /// </summary>
+    public Task<IReadOnlyList<GoodsReceiptForPurchaseOrderResponse>> GetGoodsReceiptsByBaseEntryAsync(int baseEntry, string vendorCode, CancellationToken ct = default);
+
     /// <summary>Fetches the full SAP price list catalog (id + name only).</summary>
     public Task<IReadOnlyList<PriceListResponse>> GetPriceListsAsync(CancellationToken ct = default);
 
@@ -173,6 +181,15 @@ public sealed record GoodsReceiptDocumentResponse(
 );
 
 public sealed record GoodsReceiptDocumentLine(string ItemCode, decimal Quantity, string WarehouseCode);
+
+public sealed record GoodsReceiptForPurchaseOrderResponse(
+    int DocEntry,
+    int DocNum,
+    string DocDate,
+    IReadOnlyList<GoodsReceiptForPurchaseOrderLine> Lines
+);
+
+public sealed record GoodsReceiptForPurchaseOrderLine(int LineNum, string ItemCode, decimal Quantity, int BaseEntry, int BaseLine);
 
 public sealed record WarehousePosInfo(string WarehouseCode, bool IsPosEnabled, string? CodBusiness);
 
