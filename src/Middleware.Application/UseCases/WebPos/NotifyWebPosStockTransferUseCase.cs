@@ -39,6 +39,7 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
     {
         var warehouseCodes = new[] { request.FromWarehouse, request.ToWarehouse }.Distinct().ToList();
         var posInfo = await _sapGateway.GetWarehousesPosInfoForTestCompanyAsync(warehouseCodes, cancellationToken);
+        var trackedWarehouses = TrackedWarehouses(warehouseCodes, posInfo);
 
         var affectedWarehouses = warehouseCodes
             .Select(code => posInfo.GetValueOrDefault(code))
@@ -51,7 +52,7 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
             _logger.LogInformation(
                 "DocEntry={DocEntry}: ni {FromWarehouse} ni {ToWarehouse} están en WEBPOS (U_WEBPOS) — se omite la notificación",
                 request.DocEntry, request.FromWarehouse, request.ToWarehouse);
-            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "SKIPPED_NOT_POS", null, cancellationToken);
+            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "SKIPPED_NOT_POS", null, trackedWarehouses, cancellationToken);
             return new WebPosSyncInfo(WebPosSyncStatus.SkippedNotPos);
         }
 
@@ -76,12 +77,12 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
             _logger.LogWarning(
                 "DocEntry={DocEntry}: WEBPOS rechazó {Count} actualización(es) — {Reason}",
                 request.DocEntry, rejectionReasons.Count, reason);
-            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "REJECTED", reason, cancellationToken);
+            await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "REJECTED", reason, trackedWarehouses, cancellationToken);
             return new WebPosSyncInfo(WebPosSyncStatus.Rejected, reason);
         }
 
         _logger.LogInformation("DocEntry={DocEntry}: stock sincronizado en WEBPOS correctamente", request.DocEntry);
-        await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "SYNCED", null, cancellationToken);
+        await _posSyncStatusRepository.UpsertAsync(PosSyncDocTypes.StockTransfer, request.DocEntry, request.DocNum, "SYNCED", null, trackedWarehouses, cancellationToken);
         return new WebPosSyncInfo(WebPosSyncStatus.Synced);
     }
 
@@ -152,4 +153,10 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
 
         return await _webPosGateway.UpdateInventoryAsync(codBusiness, itemCode, enrichedStoreStock, cancellationToken);
     }
+
+    /// <summary>Almacenes del documento con su negocio WEBPOS (null si no están en WEBPOS): es lo que soporte necesita para saber dónde crear el producto.</summary>
+    private static List<PosSyncWarehouse> TrackedWarehouses(IEnumerable<string> warehouseCodes, IReadOnlyDictionary<string, WarehousePosInfo> posInfo) =>
+        warehouseCodes
+            .Select(code => new PosSyncWarehouse(code, posInfo.GetValueOrDefault(code) is { IsPosEnabled: true } info ? info.CodBusiness : null))
+            .ToList();
 }

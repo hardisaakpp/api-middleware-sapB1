@@ -2,6 +2,7 @@ using System.Net.Security;
 using System.Security.Authentication;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Middleware.Application.Abstractions;
 using Middleware.Infrastructure.Configuration;
@@ -88,7 +89,7 @@ public static class DependencyInjection
         services.AddHttpClient("WebPosLogin", (sp, client) =>
         {
             var settings = sp.GetRequiredService<IOptions<WebPosSettings>>().Value;
-            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/'); // NOSONAR
+            client.BaseAddress = new Uri(ResolveWebPosBaseUrl(sp, settings)); // NOSONAR
             client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
         })
         .ConfigurePrimaryHttpMessageHandler(BuildWebPosHandler);
@@ -96,7 +97,7 @@ public static class DependencyInjection
         services.AddHttpClient<IWebPosClient, WebPosClient>((sp, client) =>
         {
             var settings = sp.GetRequiredService<IOptions<WebPosSettings>>().Value;
-            client.BaseAddress = new Uri(settings.BaseUrl.TrimEnd('/') + '/'); // NOSONAR
+            client.BaseAddress = new Uri(ResolveWebPosBaseUrl(sp, settings)); // NOSONAR
             client.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds + 10);
         })
         .ConfigurePrimaryHttpMessageHandler(BuildWebPosHandler)
@@ -131,5 +132,18 @@ public static class DependencyInjection
         services.AddObservability(configuration);
 
         return services;
+    }
+
+    /// <summary>Normalises WebPos:BaseUrl (see <see cref="WebPosSettings.NormalizeBaseUrl"/>) and logs when it had to fix it.</summary>
+    private static string ResolveWebPosBaseUrl(IServiceProvider sp, WebPosSettings settings)
+    {
+        var (url, strippedExternal) = WebPosSettings.NormalizeBaseUrl(settings.BaseUrl);
+        if (strippedExternal)
+        {
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger("WebPos")
+                .LogWarning("WebPos:BaseUrl '{Configured}' termina en '/external'; se usa '{Resolved}'. Corrija la configuración: la URL debe ser la raíz del servidor WEBPOS.", settings.BaseUrl, url);
+        }
+
+        return url;
     }
 }

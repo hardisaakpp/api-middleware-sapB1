@@ -6,6 +6,8 @@ public static class WebPosIntegrationResults
     public const string Integrated = "INTEGRADO";
     public const string NotApplicable = "NO_CORRESPONDE";
     public const string Rejected = "RECHAZADO";
+    /// <summary>The notification never reached WEBPOS (connection, configuration, timeout): nothing was rejected, it must be re-sent.</summary>
+    public const string Error = "ERROR";
 }
 
 /// <summary>Why HITELL rejected a document, reduced to what the client can act on.</summary>
@@ -30,6 +32,9 @@ public sealed record WebPosRejectionDetail(
     IReadOnlyList<WebPosRejectedItem> Items,
     string RetryEndpoint);
 
+/// <summary>Almacén del documento y su negocio WEBPOS (null si el almacén no está en WEBPOS). Es donde soporte crea el producto rechazado.</summary>
+public sealed record WebPosSyncWarehouse(string Code, string? CodBusiness);
+
 /// <summary>
 /// One pos_sync_status row plus its business interpretation: <c>result</c> is what the UI shows
 /// (INTEGRADO / NO_CORRESPONDE / RECHAZADO) and <c>rejection</c>, only when RECHAZADO, says
@@ -45,4 +50,5 @@ public sealed record WebPosSyncStatusResponse(
     int Attempts,
     DateTime CreatedAt,
     DateTime? UpdatedAt,
-    WebPosRejectionDetail? Rejection);
+    WebPosRejectionDetail? Rejection,
+    IReadOnlyList<WebPosSyncWarehouse> Warehouses);

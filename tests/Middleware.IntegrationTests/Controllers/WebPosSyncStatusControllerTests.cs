@@ -18,6 +18,7 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
 {
     private readonly WebApplicationFactory<Program> _factory;
     private readonly InMemoryPosSyncStatusRepository _repository = new();
+    private readonly InMemoryApiLogRepository _apiLog = new();
 
     public WebPosSyncStatusControllerTests(WebApplicationFactory<Program> factory)
     {
@@ -25,24 +26,31 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
         {
             builder.ConfigureServices(services =>
             {
-                var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IPosSyncStatusRepository));
-                if (descriptor is not null)
+                foreach (var type in new[] { typeof(IPosSyncStatusRepository), typeof(IApiLogRepository) })
                 {
-                    services.Remove(descriptor);
+                    var descriptor = services.SingleOrDefault(d => d.ServiceType == type);
+                    if (descriptor is not null)
+                    {
+                        services.Remove(descriptor);
+                    }
                 }
 
                 services.AddScoped<IPosSyncStatusRepository>(_ => _repository);
+                services.AddScoped<IApiLogRepository>(_ => _apiLog);
             });
         });
     }
 
+    // LP-CON está en WEBPOS (negocio 1); LP-CD es el centro de distribución, fuera de WEBPOS.
+    private static readonly PosSyncWarehouse[] Tiendas = [new("LP-CD", null), new("LP-CON", "1")];
+
     private async Task SeedAsync()
     {
-        await _repository.UpsertAsync("ST", 587061, 1061, "SYNCED", null);
-        await _repository.UpsertAsync("ST", 587065, 1065, "REJECTED", "LIMP0027 (1): No entity found for query");
-        await _repository.UpsertAsync("GR", 900, 5900, "REJECTED", "SKBLZ0147 (1): El producto no existe.");
-        await _repository.UpsertAsync("ST", 587070, 1070, "REJECTED", "ACHOME001 (1): La tienda no pertenece al negocio");
-        await _repository.UpsertAsync("ST", 587080, 1080, "SKIPPED_NOT_POS", null);
+        await _repository.UpsertAsync("ST", 587061, 1061, "SYNCED", null, Tiendas);
+        await _repository.UpsertAsync("ST", 587065, 1065, "REJECTED", "LIMP0027 (1): No entity found for query", Tiendas);
+        await _repository.UpsertAsync("GR", 900, 5900, "REJECTED", "SKBLZ0147 (1): El producto no existe.", Tiendas);
+        await _repository.UpsertAsync("ST", 587070, 1070, "REJECTED", "ACHOME001 (1): La tienda no pertenece al negocio", Tiendas);
+        await _repository.UpsertAsync("ST", 587080, 1080, "SKIPPED_NOT_POS", null, Tiendas);
     }
 
     [Fact]
@@ -63,6 +71,9 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
         body.Rejection.Description.Should().Contain("LIMP0027");
         body.Rejection.Items.Should().ContainSingle(i => i.ItemCode == "LIMP0027" && i.CodBusiness == "1" && i.Type == "PRODUCTO_NO_EXISTE");
         body.Rejection.RetryEndpoint.Should().Be("/api/v1/webpos/stock-transfers/587065/retry");
+        // Soporte necesita saber en qué tienda crear el producto: la del negocio rechazado, no el CD.
+        body.Rejection.Description.Should().Contain("LP-CON").And.NotContain("LP-CD");
+        body.Warehouses.Should().BeEquivalentTo(new[] { new WebPosSyncWarehouse("LP-CD", null), new WebPosSyncWarehouse("LP-CON", "1") });
     }
 
     [Fact]
@@ -129,6 +140,25 @@ public sealed class WebPosSyncStatusControllerTests : IClassFixture<WebApplicati
 
         body!.Total.Should().Be(0);
         body.Entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Get_RowWithoutDocNum_IsCompletedFromApiLogWithoutCallingSap()
+    {
+        // Fila vieja: sin DocNum ni almacenes. La bitácora tiene la creación del documento.
+        await _repository.UpsertAsync("ST", 587092, null, "SYNCED", null, []);
+        _apiLog.Seed(new ApiLogEntry(
+            "POST /api/v1/stock-transfers/direct",
+            """{"fromWarehouse":"TRL-SCA","toWarehouse":"RL-SCA","lines":[]}""",
+            """{"docEntry":587092,"docNum":169603,"webPosSync":{"status":"Synced"}}""",
+            "system", 201, 900), new DateTime(2026, 9, 4, 10, 0, 0));
+        var client = _factory.CreateClient();
+
+        var body = await client.GetFromJsonAsync<WebPosSyncStatusResponse>("/api/v1/webpos/sync-status/ST/587092");
+
+        body!.DocNum.Should().Be(169603);
+        // Queda persistido: la segunda lectura ya no depende de la bitácora.
+        (await _repository.GetAsync("ST", 587092))!.DocNum.Should().Be(169603);
     }
 
     [Fact]

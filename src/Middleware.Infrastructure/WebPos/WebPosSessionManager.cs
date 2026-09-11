@@ -78,7 +78,7 @@ internal sealed class WebPosSessionManager : IWebPosSessionManager
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new WebPosException(response.StatusCode, content);
+            throw LoginFailure(client.BaseAddress, response.StatusCode, content);
         }
 
         using var doc = JsonDocument.Parse(content);
@@ -89,7 +89,7 @@ internal sealed class WebPosSessionManager : IWebPosSessionManager
             !retorno.TryGetProperty("token", out var tokenEl) ||
             tokenEl.ValueKind != JsonValueKind.String)
         {
-            throw new WebPosException(response.StatusCode, content);
+            throw LoginFailure(client.BaseAddress, response.StatusCode, content);
         }
 
         _token = tokenEl.GetString();
@@ -106,5 +106,19 @@ internal sealed class WebPosSessionManager : IWebPosSessionManager
         _expiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(60, expirationSeconds - 60));
 
         _logger.LogInformation("WEBPOS session established, expires at {ExpiresAt:O}", _expiresAt);
+    }
+
+    /// <summary>
+    /// A failed login is almost always configuration, not WEBPOS being down: wrong credentials, or a
+    /// BaseUrl that is not the server root (WEBPOS then answers "token inválido" even to the login
+    /// itself). The message names the URL that was called so support can spot it in the bitácora.
+    /// </summary>
+    private WebPosException LoginFailure(Uri? baseAddress, System.Net.HttpStatusCode status, string content)
+    {
+        var url = $"{baseAddress}apilogin/external";
+        _logger.LogError("WEBPOS login failed at {Url} (HTTP {Status}): {Content}", url, (int)status, content);
+        return new WebPosException(
+            status,
+            $"Login WEBPOS falló en {url} (HTTP {(int)status}): {content}. Verifique WebPos:BaseUrl (debe ser la raíz del servidor, sin '/external') y las credenciales.");
     }
 }

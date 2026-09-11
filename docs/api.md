@@ -627,6 +627,7 @@ Cada notificación (creación o retry, transferencia o entrada) deja su resultad
 | `SYNCED` | **Integrado** — HITELL aceptó la actualización de stock |
 | `SKIPPED_NOT_POS` | **No corresponde integración** — ninguna bodega del documento está habilitada para WEBPOS |
 | `REJECTED` | **Rechazado** — HITELL rechazó (típicamente producto no creado/migrado); `reason` trae el mensaje. Corregir en HITELL y reintegrar con el endpoint retry hasta llegar a `SYNCED`/`SKIPPED_NOT_POS` |
+| `ERROR` | **Error de envío** — la notificación nunca llegó a HITELL (WEBPOS caído, login fallido, `WebPos:BaseUrl` mal configurada, timeout). No es un rechazo: `reason` trae el error técnico. Reintegrar con el endpoint retry cuando la causa esté resuelta |
 
 `attempts` cuenta las veces que se intentó la integración del documento; `doc_num` es el número
 visible del documento en SAP. DDL en `sql/create_pos_sync_status.sql` (ambientes nuevos),
@@ -667,8 +668,8 @@ tiene que conocer los textos de HITELL. `docType`: `ST` o `GR` (case-insensitive
 
 | Campo | Significado |
 |---|---|
-| `status` | Valor persistido: `SYNCED` \| `SKIPPED_NOT_POS` \| `REJECTED` |
-| `result` | Lectura de negocio para mostrar: `INTEGRADO` \| `NO_CORRESPONDE` \| `RECHAZADO` |
+| `status` | Valor persistido: `SYNCED` \| `SKIPPED_NOT_POS` \| `REJECTED` \| `ERROR` |
+| `result` | Lectura de negocio para mostrar: `INTEGRADO` \| `NO_CORRESPONDE` \| `RECHAZADO` \| `ERROR` |
 | `reason` | Texto crudo de HITELL (`ITEM (negocio): mensaje`, varios separados por ` \| `). Solo informativo |
 | `rejection` | Solo cuando `result = RECHAZADO`; `null` en los demás casos |
 | `rejection.type` | `PRODUCTO_NO_EXISTE` cuando **todos** los ítems rechazados no existen en HITELL para ese negocio (HITELL responde `El producto no existe.` o `No entity found for query`). `OTRO` para cualquier otro rechazo |
@@ -690,7 +691,7 @@ invocar `rejection.retryEndpoint` y volver a consultar hasta que `result` sea `I
 ### GET /webpos/sync-status
 
 Listado **paginado** con la misma forma que el endpoint puntual, más reciente primero (por última
-actualización). Query params opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS`),
+actualización). Query params opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS` \| `ERROR`),
 `docType` (`ST` \| `GR`), `rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica
 `status=REJECTED`), `docNum` (número de documento SAP, lo que ve el usuario), `docEntry`,
 `from` / `to` (sobre la última actualización, inclusivos), `page` (default 1) y `pageSize`
@@ -716,7 +717,17 @@ Usos típicos del cliente (Nexus, módulo Integraciones → pestaña HITELL, que
 ```
 
 `docNum` se guarda desde esta versión (columna `doc_num`, ver `sql/alter_pos_sync_status_add_doc_num.sql`
-para ambientes donde la tabla ya existía); las filas anteriores lo traen `null` hasta su próximo reintento.
+para ambientes donde la tabla ya existía). Las filas anteriores que no lo tienen se **completan
+automáticamente** al consultarlas, una sola vez y quedan persistidas: primero desde la **bitácora**
+(`api_log` guarda la respuesta del POST que creó el documento, con su `docNum`, y la petición con sus
+almacenes — sin depender de SAP) y, si allí no hay rastro, leyendo el documento en SAP. Si nada
+responde, la fila sale con `docNum: null`. El negocio WEBPOS de cada almacén sí requiere SAP; si SAP
+no responde, los almacenes no se guardan para no mostrarlos como "fuera de WEBPOS" por error.
+
+`warehouses` (columna `warehouses`, JSON; ver `sql/alter_pos_sync_status_add_warehouses.sql`) trae los
+almacenes del documento con su negocio WEBPOS (`[{ "code": "LP-CON", "codBusiness": "9" }, { "code": "LP-CD", "codBusiness": null }]`),
+y en un rechazo `rejection.description` nombra las tiendas del negocio rechazado: es donde soporte debe
+crear el producto antes de reintegrar. Filas anteriores: `[]` hasta el siguiente reintento.
 
 ---
 
