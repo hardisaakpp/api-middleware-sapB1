@@ -38,6 +38,20 @@ internal sealed class JobExecutionCoordinator : IJobExecutionCoordinator
         int successStatusCode,
         CancellationToken cancellationToken = default)
     {
+        // Si ya hay un job encolado/procesando para exactamente la misma request (mismo
+        // requestType+endpoint+payload), nos enganchamos a ese en vez de lanzar otro intento
+        // contra SAP. Sin esto, cada reintento manual del usuario (p.ej. recargando la busqueda
+        // varias veces mientras SAP esta lento/caido) dispara su propia cadena independiente de
+        // intentos contra SAP, sumando carga justo cuando SAP ya esta saturado.
+        var activeJobId = await _repository.FindActiveIdAsync(requestType, endpoint, requestPayloadJson, cancellationToken);
+        if (activeJobId is not null)
+        {
+            _logger.LogInformation(
+                "Job {JobId} ya en curso para {RequestType} {Endpoint}; se reutiliza en vez de reintentar contra SAP",
+                activeJobId, requestType, endpoint);
+            return new JobQueued<TResponse>(activeJobId.Value);
+        }
+
         Task<TResponse> RunOnceAsync() => RunInFreshScopeAsync(attempt);
 
         var firstAttempt = RunOnceAsync();
