@@ -48,6 +48,7 @@ internal sealed class SapGateway : ISapGateway
     private const string ItemWarehouseInfoCollectionProperty = "ItemWarehouseInfoCollection";
     private const string ItemDescriptionProperty = "ItemDescription";
     private const string LineNumProperty = "LineNum";
+    private const string ValidProperty = "Valid";
     private const string StockTransfersResource = "StockTransfers";
     private const string PurchaseDeliveryNotesResource = "PurchaseDeliveryNotes";
 
@@ -949,7 +950,7 @@ internal sealed class SapGateway : ISapGateway
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
         [FrozenProperty] = r.Frozen,
-        ["Valid"] = r.Valid,
+        [ValidProperty] = r.Valid,
         ["ValidFrom"] = r.ValidFrom,
         ["ValidTo"] = r.ValidTo,
         ["FrozenFrom"] = r.FrozenFrom,
@@ -1019,7 +1020,7 @@ internal sealed class SapGateway : ISapGateway
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
         [FrozenProperty] = r.Frozen,
-        ["Valid"] = r.Valid,
+        [ValidProperty] = r.Valid,
         ["ValidFrom"] = r.ValidFrom,
         ["ValidTo"] = r.ValidTo,
         ["FrozenFrom"] = r.FrozenFrom,
@@ -1223,7 +1224,7 @@ internal sealed class SapGateway : ISapGateway
             IsTyes(root, PurchaseItemProperty),
             IsTyes(root, "SalesItem"),
             IsTyes(root, "InventoryItem"),
-            IsTyes(root, "Valid"),
+            IsTyes(root, ValidProperty),
             IsTyes(root, FrozenProperty),
             StrOpt("ItemType"),
             StrOptNormalized("U_IXX_PACK"),
@@ -2003,7 +2004,7 @@ internal sealed class SapGateway : ISapGateway
             StrOpt("Currency"),
             StrOpt("Phone1"),
             StrOpt("EmailAddress"),
-            Valid: IsTyes(root, "Valid"),
+            Valid: IsTyes(root, ValidProperty),
             Frozen: IsTyes(root, FrozenProperty)
         );
     }
@@ -2202,7 +2203,7 @@ internal sealed class SapGateway : ISapGateway
             ic.GetString()!,
             item.TryGetProperty(ItemNameProperty, out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
             IsTyes(item, PurchaseItemProperty),
-            IsTyes(item, "Valid"),
+            IsTyes(item, ValidProperty),
             IsTyes(item, FrozenProperty),
             item.TryGetProperty(InventoryUomProperty, out var uom) && uom.ValueKind == JsonValueKind.String ? uom.GetString() : null,
             ParseItemWarehouses(item)
