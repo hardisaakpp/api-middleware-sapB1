@@ -46,6 +46,7 @@ internal sealed class SapGateway : ISapGateway
     private const string ItemNameProperty = "ItemName";
     private const string BarCodeProperty = "BarCode";
     private const string ItemWarehouseInfoCollectionProperty = "ItemWarehouseInfoCollection";
+    private const string ItemDescriptionProperty = "ItemDescription";
     private const string StockTransfersResource = "StockTransfers";
     private const string PurchaseDeliveryNotesResource = "PurchaseDeliveryNotes";
 
@@ -308,7 +309,7 @@ internal sealed class SapGateway : ISapGateway
 
             lines.Add(new StockTransferLineStatusResponse(
                 LineStr("ItemCode"),
-                LineStr("ItemDescription"),
+                LineStr(ItemDescriptionProperty),
                 LineDec(QuantityProperty),
                 LineDec("RemainingOpenQuantity")
             ));
@@ -600,7 +601,7 @@ internal sealed class SapGateway : ISapGateway
             var node = new Dictionary<string, object?>
             {
                 ["AccountCode"] = NormalizeLiquidacionAccountCode(line.AccountCode),
-                ["ItemDescription"] = line.ItemDescription,
+                [ItemDescriptionProperty] = line.ItemDescription,
                 [QuantityProperty] = line.Quantity,
                 ["UnitPrice"] = line.UnitPrice,
                 ["TaxCode"] = line.TaxCode,
@@ -746,7 +747,7 @@ internal sealed class SapGateway : ISapGateway
                     RequiredDecimal(l, "RemainingOpenQuantity", $"DocumentLines[{i}]"),
                     RequiredDecimal(l, "UnitPrice", $"DocumentLines[{i}]"),
                     RequiredString(l, WarehouseCodeProperty, $"DocumentLines[{i}]"),
-                    ItemDescription: OptionalString(l, "ItemDescription")
+                    ItemDescription: OptionalString(l, ItemDescriptionProperty)
                 )).ToList()
             : (IReadOnlyList<PurchaseOrderLineResponse>)[];
 
@@ -2139,7 +2140,7 @@ internal sealed class SapGateway : ISapGateway
                     // Confirmado en vivo contra TEST_MABEL: el campo real es "RemainingOpenQuantity"
                     // (mismo nombre que en PurchaseOrders) — no "OpenQuantity".
                     RequiredDecimal(l, "RemainingOpenQuantity", $"StockTransferLines[{i}]"),
-                    OptString(l, "ItemDescription"),
+                    OptString(l, ItemDescriptionProperty),
                     OptString(l, "FromWarehouseCode")
                 )).ToList()
             : (IReadOnlyList<InventoryTransferRequestLineResponse>)[];
