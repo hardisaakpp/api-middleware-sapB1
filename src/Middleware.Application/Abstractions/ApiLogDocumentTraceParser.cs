@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 
 namespace Middleware.Application.Abstractions;
@@ -30,7 +31,7 @@ public static class ApiLogDocumentTraceParser
         }
     }
 
-    private static IReadOnlyList<string> ReadWarehouses(string docType, string? request)
+    private static List<string> ReadWarehouses(string docType, string? request)
     {
         if (string.IsNullOrWhiteSpace(request))
         {
@@ -90,13 +91,10 @@ public static class ApiLogDocumentTraceParser
             return false;
         }
 
-        foreach (var property in element.EnumerateObject())
+        foreach (var property in element.EnumerateObject().Where(property => property.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
         {
-            if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            {
-                value = property.Value;
-                return true;
-            }
+            value = property.Value;
+            return true;
         }
 
         value = default;
