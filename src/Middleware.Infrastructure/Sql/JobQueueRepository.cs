@@ -36,6 +36,30 @@ internal sealed class JobQueueRepository : IJobQueueRepository
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    public async Task<Guid?> FindActiveIdAsync(string requestType, string endpoint, string requestPayloadJson, CancellationToken ct = default)
+    {
+        await using var connection = new SqlConnection(_settings.ConnectionString);
+        await connection.OpenAsync(ct);
+
+        const string sql = """
+            SELECT TOP (1) id
+            FROM dbo.job_queue
+            WHERE request_type = @requestType AND endpoint = @endpoint AND request_payload = @requestPayload
+              AND status IN (@encolado, @processing)
+            ORDER BY created_at DESC
+            """;
+
+        await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
+        cmd.Parameters.AddWithValue("@requestType", requestType);
+        cmd.Parameters.AddWithValue("@endpoint", endpoint);
+        cmd.Parameters.AddWithValue("@requestPayload", requestPayloadJson);
+        cmd.Parameters.AddWithValue("@encolado", JobStatuses.Encolado);
+        cmd.Parameters.AddWithValue("@processing", JobStatuses.Procesando);
+
+        var result = await cmd.ExecuteScalarAsync(ct);
+        return result is Guid id ? id : null;
+    }
+
     public async Task<bool> MarkProcessingAsync(Guid jobId, CancellationToken ct = default)
     {
         await using var connection = new SqlConnection(_settings.ConnectionString);

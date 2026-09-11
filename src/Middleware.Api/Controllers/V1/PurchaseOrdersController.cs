@@ -104,6 +104,27 @@ public sealed class PurchaseOrdersController : ControllerBase // NOSONAR
         };
     }
 
+    [HttpGet("by-doc-num/{docNum:int}")]
+    [ProducesResponseType(typeof(PurchaseOrderResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetByDocNum(int docNum, CancellationToken cancellationToken)
+    {
+        var request = new GetPurchaseOrderByDocNumRequest(docNum);
+        var payloadJson = JsonSerializer.Serialize(request);
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetPurchaseOrderByDocNum", $"GET /api/v1/purchase-orders/by-doc-num/{docNum}", payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetPurchaseOrderByDocNumUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.OK, cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<PurchaseOrderResponse?> c => c.Response is null ? NotFound() : Ok(c.Response),
+            JobQueued<PurchaseOrderResponse?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
     [HttpPatch("{docEntry:int}")]
     [ProducesResponseType(typeof(UpdatePurchaseOrderResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]

@@ -25,7 +25,7 @@ FROM base AS final
 WORKDIR /app
 # logs/ must belong to the non-root app user or the Serilog file sink fails silently.
 USER root
-RUN mkdir -p /app/logs && chown -R $APP_UID /app/logs
+RUN mkdir -p /app/logs && chown -R "$APP_UID" /app/logs
 USER $APP_UID
 COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "Middleware.Api.dll"]

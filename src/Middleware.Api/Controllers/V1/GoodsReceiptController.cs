@@ -48,4 +48,32 @@ public sealed class GoodsReceiptController : ControllerBase
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
+
+    [HttpGet]
+    [ProducesResponseType(typeof(GoodsReceiptsByBaseEntryResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetByBaseEntry(
+        [FromQuery] int baseEntry,
+        [FromQuery] string vendorCode,
+        CancellationToken cancellationToken)
+    {
+        var request = new GetGoodsReceiptsByBaseEntryRequest(baseEntry, vendorCode);
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetGoodsReceiptsByBaseEntry",
+            $"GET /api/v1/goods-receipts?baseEntry={baseEntry}&vendorCode={vendorCode}",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetGoodsReceiptsByBaseEntryUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<GoodsReceiptsByBaseEntryResponse> c => Ok(c.Response),
+            JobQueued<GoodsReceiptsByBaseEntryResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
 }

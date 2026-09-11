@@ -20,6 +20,17 @@ internal sealed class InMemoryJobQueueRepository : IJobQueueRepository
         return Task.CompletedTask;
     }
 
+    public Task<Guid?> FindActiveIdAsync(string requestType, string endpoint, string requestPayloadJson, CancellationToken ct = default)
+    {
+        var match = _jobs.Values
+            .Where(j => j.RequestType == requestType && j.Endpoint == endpoint && j.RequestPayloadJson == requestPayloadJson)
+            .Where(j => j.Status is JobStatuses.Encolado or JobStatuses.Procesando)
+            .OrderByDescending(j => j.CreatedAt)
+            .FirstOrDefault();
+
+        return Task.FromResult(match is null ? (Guid?)null : match.Id);
+    }
+
     public Task<bool> MarkProcessingAsync(Guid jobId, CancellationToken ct = default)
     {
         if (!_jobs.TryGetValue(jobId, out var job) ||
