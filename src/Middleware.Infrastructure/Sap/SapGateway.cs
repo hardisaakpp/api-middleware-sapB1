@@ -2367,9 +2367,9 @@ internal sealed class SapGateway : ISapGateway
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            _logger.LogInformation(
+            _logger.LogInformation( // NOSONAR
                 "SAP Item '{ItemCode}' not found while checking movements; returning false",
-                itemCode); // NOSONAR
+                itemCode);
             return false;
         }
 
