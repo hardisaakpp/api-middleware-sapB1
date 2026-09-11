@@ -3,6 +3,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Jobs.Handlers;
+using Middleware.Application.UseCases.BankAccounts;
+using Middleware.Application.UseCases.BankDeposits;
 using Middleware.Application.UseCases.BusinessPartners;
 using Middleware.Application.UseCases.Deposits;
 using Middleware.Application.UseCases.GoodsReceipt;
@@ -40,6 +42,8 @@ public static class DependencyInjection
 
 
         services.AddScoped<CreateDepositUseCase>();
+        services.AddScoped<CreateBankDepositUseCase>();
+        services.AddScoped<CreateBankDepositComercialEcuadorUseCase>();
         services.AddScoped<CreateGoodsReceiptUseCase>();
         services.AddScoped<CreateLiquidacionUseCase>();
         services.AddScoped<CreatePurchaseOrderUseCase>();
@@ -68,6 +72,7 @@ public static class DependencyInjection
         services.AddScoped<GetWarehousesUseCase>();
         services.AddScoped<ValidateWarehousesUseCase>();
         services.AddScoped<GetPriceListsUseCase>();
+        services.AddScoped<GetBankAccountsUseCase>();
 
         services.AddScoped<IJobHandler, CreatePurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();

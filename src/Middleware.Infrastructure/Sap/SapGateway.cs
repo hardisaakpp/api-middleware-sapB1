@@ -386,6 +386,138 @@ internal sealed class SapGateway : ISapGateway
         return ParseDocumentResult(json);
     }
 
+    private const string DepositsResource = "Deposits";
+
+    public Task<BankDepositResult> CreateBankDepositAsync(CreateBankDepositRequest request, CancellationToken ct = default)
+        => CreateBankDepositInternalAsync(request, companyDb: null, password: null, ct);
+
+    public Task<BankDepositResult> CreateBankDepositForComercialEcuadorAsync(CreateBankDepositRequest request, CancellationToken ct = default)
+    {
+        EnsureComercialEcuadorCredentialsConfigured();
+        return CreateBankDepositInternalAsync(request, _settings.ComercialEcuadorCompanyDb, _settings.ComercialEcuadorPassword, ct);
+    }
+
+    private async Task<BankDepositResult> CreateBankDepositInternalAsync(
+        CreateBankDepositRequest request, string? companyDb, string? password, CancellationToken ct)
+    {
+        // Idempotencia: un doble clic del usuario, una condición de carrera entre pestañas, o un
+        // reintento de red pueden disparar dos POST para el mismo depósito. Antes de crear,
+        // se verifica si SAP ya tiene asentado un depósito con la misma referencia bancaria +
+        // cuenta + fecha — la misma combinación que identifica de forma única a este depósito —
+        // y, de existir, se devuelve ese documento sin ejecutar el POST de creación.
+        var existente = await FindExistingBankDepositAsync(
+            request.NumeroComprobante, request.CodigoCuentaSAP, request.FechaDepositoBanco, companyDb, password, ct);
+
+        if (existente is not null)
+        {
+            _logger.LogWarning(
+                "Depósito bancario ya existente en SAP para BankReference='{BankReference}', cuenta='{Cuenta}', fecha={Fecha}: DocEntry={DocEntry}. Se omite el POST de creación (idempotencia).",
+                request.NumeroComprobante, request.CodigoCuentaSAP, request.FechaDepositoBanco, existente.DocEntry); // NOSONAR
+
+            return existente;
+        }
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            DepositType = "dtCash",
+            DepositAccount = request.CodigoCuentaSAP,
+            DepositDate = request.FechaDepositoBanco.ToString("yyyy-MM-dd"),
+            DepositCurrency = request.Moneda,
+            AllocationAccount = request.CuentaPuente,
+            TotalLC = request.MontoDepositado,
+            JournalRemarks = $"Depósito Tienda {request.CodigoAlmacen} - Cierre {request.FechaCierreCaja:dd/MM/yyyy}",
+            // ODPS.BankRef en SAP B1 tiene un límite estricto de 8 caracteres; un comprobante más
+            // largo hace que SAP rechace la creación del depósito.
+            BankReference = request.NumeroComprobante.Length > 8
+                ? request.NumeroComprobante[..8]
+                : request.NumeroComprobante,
+            U_IXX_REF_BANCARIA = request.CodigoAlmacen
+        }, JsonOptions);
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, DepositsResource, payload, companyDb, password, ct);
+        return ParseBankDepositResult(json);
+    }
+
+    // Pre-check de solo lectura (GET, no POST) para idempotencia: BankReference (truncado a 8
+    // caracteres, igual que en el payload de creación) + cuenta + fecha identifican de forma única
+    // a un depósito de este flujo. internal (no private): expuesto a Middleware.UnitTests.
+    internal async Task<BankDepositResult?> FindExistingBankDepositAsync(
+        string bankReference, string accountCode, DateOnly depositDate, string? companyDb, string? password, CancellationToken ct)
+    {
+        var refTruncada = (bankReference.Length > 8 ? bankReference[..8] : bankReference).Replace("'", "''");
+        var accountCodeEscapado = accountCode.Replace("'", "''");
+        var dateStr = depositDate.ToString("yyyy-MM-dd");
+
+        var resource = $"Deposits?$filter=BankReference eq '{refTruncada}' and DepositAccount eq '{accountCodeEscapado}' " +
+            $"and DepositDate eq '{dateStr}'&$select=DepositNumber,AbsEntry";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, companyDb, password, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr) || arr.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        var primero = arr[0];
+        if (primero.TryGetProperty("DepositNumber", out var depositNumberEl) && depositNumberEl.TryGetInt32(out var depositNumber))
+        {
+            return new BankDepositResult(depositNumber, "Depósito recuperado previamente de SAP.");
+        }
+
+        if (primero.TryGetProperty("AbsEntry", out var absEntryEl) && absEntryEl.TryGetInt32(out var absEntry))
+        {
+            return new BankDepositResult(absEntry, "Depósito recuperado previamente de SAP.");
+        }
+
+        return null;
+    }
+
+    private void EnsureComercialEcuadorCredentialsConfigured()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.ComercialEcuadorCompanyDb))
+        {
+            throw new InvalidOperationException("Sap:ComercialEcuadorCompanyDb no está configurado.");
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.ComercialEcuadorPassword))
+        {
+            throw new InvalidOperationException("Sap:ComercialEcuadorPassword no está configurado.");
+        }
+    }
+
+    // El objeto ODPS (Deposits) de SAP B1 Service Layer NO tiene una propiedad "DocEntry" — a
+    // diferencia de la mayoría de documentos de marketing, expone "DepositNumber" (el número de
+    // documento oficial) y "AbsEntry" (la clave primaria interna). Se prioriza DepositNumber por
+    // ser el identificador visible/oficial; AbsEntry queda como respaldo; DocEntry solo se
+    // conserva por si alguna versión/parche de SAP llegara a incluirlo.
+    // internal (no private) + AssemblyInfo.cs: expuesto a Middleware.UnitTests para poder probar
+    // este parseo directamente sin levantar todo SapGateway con sus dependencias de sesión/HTTP.
+    internal static BankDepositResult ParseBankDepositResult(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("DepositNumber", out var depositNumberEl) && depositNumberEl.TryGetInt32(out var depositNumber))
+        {
+            return new BankDepositResult(depositNumber, "Depósito registrado exitosamente en SAP.");
+        }
+
+        if (root.TryGetProperty("AbsEntry", out var absEntryEl) && absEntryEl.TryGetInt32(out var absEntry))
+        {
+            return new BankDepositResult(absEntry, "Depósito registrado exitosamente en SAP.");
+        }
+
+        if (root.TryGetProperty(DocEntryProperty, out var docEntryEl) && docEntryEl.TryGetInt32(out var docEntry))
+        {
+            return new BankDepositResult(docEntry, "Depósito registrado exitosamente en SAP.");
+        }
+
+        throw new SapResponseException(
+            "SAP no devolvió un identificador válido (DepositNumber/AbsEntry/DocEntry) en la " +
+            $"respuesta de creación del depósito bancario. Payload recibido: {json}");
+    }
+
     // Object type de SAP B1 para Purchase Orders — lo que marca un GoodsReceipt como
     // "Copy From" de una PO puntual (reduce su pendiente y la deja cerrarse sola) en vez de
     // un documento suelto sin relación con ninguna orden de compra.
@@ -2199,6 +2331,56 @@ internal sealed class SapGateway : ISapGateway
         }
 
         return priceLists;
+    }
+
+    public async Task<IReadOnlyList<ChartOfAccountResponse>> GetBankAccountsAsync(CancellationToken ct = default)
+    {
+        var accounts = new List<ChartOfAccountResponse>();
+        string? resource = "ChartOfAccounts?$select=Code,Name,FormatCode,ActiveAccount" +
+            "&$filter=ActiveAccount eq 'tYES' and startswith(FormatCode,'1.01.01')";
+
+        // SL pages results (default 20 per page); follow odata.nextLink until exhausted
+        const int maxPages = 100;
+        for (var page = 0; resource is not null && page < maxPages; page++)
+        {
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty(ValueProperty, out var arr))
+            {
+                accounts.AddRange(ParseChartOfAccounts(arr));
+            }
+
+            resource = GetNextLink(root);
+        }
+
+        return accounts;
+    }
+
+    private static List<ChartOfAccountResponse> ParseChartOfAccounts(JsonElement arr)
+    {
+        var accounts = new List<ChartOfAccountResponse>();
+        foreach (var entry in arr.EnumerateArray())
+        {
+            if (!entry.TryGetProperty("Code", out var code) || code.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            accounts.Add(new ChartOfAccountResponse(
+                code.GetString()!,
+                entry.TryGetProperty("Name", out var name) && name.ValueKind == JsonValueKind.String
+                    ? name.GetString()!
+                    : string.Empty,
+                entry.TryGetProperty("FormatCode", out var fc) && fc.ValueKind == JsonValueKind.String
+                    ? fc.GetString()!
+                    : string.Empty,
+                IsTyes(entry, "ActiveAccount")
+            ));
+        }
+        return accounts;
     }
 
     public async Task<bool> HasItemMovementsAsync(string itemCode, CancellationToken ct = default)
