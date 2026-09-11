@@ -47,6 +47,7 @@ internal sealed class SapGateway : ISapGateway
     private const string BarCodeProperty = "BarCode";
     private const string ItemWarehouseInfoCollectionProperty = "ItemWarehouseInfoCollection";
     private const string ItemDescriptionProperty = "ItemDescription";
+    private const string LineNumProperty = "LineNum";
     private const string StockTransfersResource = "StockTransfers";
     private const string PurchaseDeliveryNotesResource = "PurchaseDeliveryNotes";
 
@@ -738,7 +739,7 @@ internal sealed class SapGateway : ISapGateway
         var lines = root.TryGetProperty(DocumentLinesProperty, out var linesEl)
             ? linesEl.EnumerateArray()
                 .Select((l, i) => new PurchaseOrderLineResponse(
-                    RequiredInt(l, "LineNum", $"DocumentLines[{i}]"),
+                    RequiredInt(l, LineNumProperty, $"DocumentLines[{i}]"),
                     RequiredString(l, ItemCodeProperty, $"DocumentLines[{i}]"),
                     RequiredDecimal(l, QuantityProperty, $"DocumentLines[{i}]"),
                     // El nombre real en SAP Service Layer es "RemainingOpenQuantity" —
@@ -1739,7 +1740,7 @@ internal sealed class SapGateway : ISapGateway
                 continue;
             }
 
-            var lineNum = line.TryGetProperty("LineNum", out var lnEl) && lnEl.TryGetInt32(out var lnVal) ? lnVal : 0;
+            var lineNum = line.TryGetProperty(LineNumProperty, out var lnEl) && lnEl.TryGetInt32(out var lnVal) ? lnVal : 0;
             var baseLine = line.TryGetProperty("BaseLine", out var blEl) && blEl.TryGetInt32(out var blVal) ? blVal : 0;
 
             lines.Add(new GoodsReceiptForPurchaseOrderLine(lineNum, itemCode, DecimalOrZero(line, QuantityProperty), lineBaseEntry, baseLine));
@@ -2031,7 +2032,7 @@ internal sealed class SapGateway : ISapGateway
 
             var lines = item.TryGetProperty(StockTransferLinesProperty, out var linesEl)
                 ? linesEl.EnumerateArray().Select((l, i) => new InventoryTransferRequestLineResponse(
-                    l.TryGetProperty("LineNum", out var ln) && ln.TryGetInt32(out var lv) ? lv : i,
+                    l.TryGetProperty(LineNumProperty, out var ln) && ln.TryGetInt32(out var lv) ? lv : i,
                     l.TryGetProperty(ItemCodeProperty, out var li) && li.ValueKind == JsonValueKind.String ? li.GetString()! : string.Empty,
                     l.TryGetProperty(QuantityProperty, out var lq) && lq.TryGetDecimal(out var lqv) ? lqv : 0m,
                     l.TryGetProperty(WarehouseCodeProperty, out var lw) && lw.ValueKind == JsonValueKind.String ? lw.GetString() : null
@@ -2133,7 +2134,7 @@ internal sealed class SapGateway : ISapGateway
         var lines = root.TryGetProperty(StockTransferLinesProperty, out var linesEl)
             ? linesEl.EnumerateArray()
                 .Select((l, i) => new InventoryTransferRequestLineResponse(
-                    RequiredInt(l, "LineNum", $"StockTransferLines[{i}]"),
+                    RequiredInt(l, LineNumProperty, $"StockTransferLines[{i}]"),
                     RequiredString(l, ItemCodeProperty, $"StockTransferLines[{i}]"),
                     RequiredDecimal(l, QuantityProperty, $"StockTransferLines[{i}]"),
                     RequiredString(l, WarehouseCodeProperty, $"StockTransferLines[{i}]"),
