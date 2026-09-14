@@ -173,8 +173,8 @@ internal sealed class SapGateway : ISapGateway
         }
         catch (Exception ex) when (hasKey && MayHaveCreatedDocument(ex))
         {
-            // El fallo no dice si SAP creó el documento; se resuelve fuera del catch (S2139: no
-            // registrar y relanzar dentro del mismo bloque).
+            // El fallo no dice si SAP creó el documento. Se guarda y se resuelve fuera del catch,
+            // porque registrar y relanzar en el mismo bloque incumple la regla S2139 de Sonar.
             inconclusive = ex;
         }
 
