@@ -829,7 +829,7 @@ internal sealed class SapGateway : ISapGateway
     }
 
     /// <summary>Liquidaciones: cada cuenta contable del request aparece en las líneas del documento encontrado.</summary>
-    private static bool HasSameAccounts(JsonElement found, IReadOnlySet<string> requestAccounts)
+    private static bool HasSameAccounts(JsonElement found, HashSet<string> requestAccounts)
     {
         var foundAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (found.TryGetProperty(DocumentLinesProperty, out var linesEl) && linesEl.ValueKind == JsonValueKind.Array)
