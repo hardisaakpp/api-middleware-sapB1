@@ -33,7 +33,7 @@ internal sealed class SapGateway : ISapGateway
 
     private const string ValueProperty = "value";
     private const string DocEntryProperty = "DocEntry";
-    private const string CardCodeProperty = CardCodeProperty;
+    private const string CardCodeProperty = "CardCode";
     private const string DocNumProperty = "DocNum";
     private const string QuantityProperty = "Quantity";
     private const string ItemCodeProperty = "ItemCode";
