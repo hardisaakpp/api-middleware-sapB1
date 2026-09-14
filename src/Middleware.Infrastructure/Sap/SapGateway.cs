@@ -283,7 +283,7 @@ internal sealed class SapGateway : ISapGateway
     }
 
     /// <summary>
-    /// Mismo origen = todo BaseEntry del request aparece en las líneas del documento encontrado (sin
+    /// Mismo origen = cada BaseEntry del request aparece en las líneas del documento encontrado (sin
     /// documento base se compara por artículos). A propósito NO exige las mismas líneas ni
     /// cantidades: recepción omite líneas en cero y el usuario puede haber escaneado algo más entre
     /// el intento que venció y el reintento; el documento de SAP ya existe y no admite cambios, así
