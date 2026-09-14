@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -157,6 +158,7 @@ internal sealed class SapGateway : ISapGateway
             }
         }
 
+        Exception inconclusive;
         try
         {
             var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, spec.Resource, payload, spec.CompanyDb, spec.Password, ct);
@@ -174,21 +176,27 @@ internal sealed class SapGateway : ISapGateway
         }
         catch (Exception ex) when (hasKey && MayHaveCreatedDocument(ex))
         {
-            _logger.LogWarning(ex, // NOSONAR
-                "SAP POST {Resource} falló para U_sap_id={USapId} sin resultado concluyente. Verificando si el documento se creó...",
-                spec.Resource, uSapId);
-
-            var recovered = await FindDocumentForKeyAsync(uSapId!, spec, ct);
-            if (recovered is not null)
-            {
-                _logger.LogWarning( // NOSONAR
-                    "Recuperado {Resource} creado por SAP pese al error: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
-                    spec.Resource, recovered.DocEntry, recovered.DocNum, uSapId);
-                return recovered with { Recovered = true };
-            }
-
-            throw;
+            // El fallo no dice si SAP creó el documento; se resuelve fuera del catch (S2139: no
+            // registrar y relanzar dentro del mismo bloque).
+            inconclusive = ex;
         }
+
+        _logger.LogWarning(inconclusive,
+            "SAP POST {Resource} falló para U_sap_id={USapId} sin resultado concluyente. Verificando si el documento se creó...",
+            spec.Resource, uSapId);
+
+        var recovered = await FindDocumentForKeyAsync(uSapId!, spec, ct);
+        if (recovered is not null)
+        {
+            _logger.LogWarning( // NOSONAR
+                "Recuperado {Resource} creado por SAP pese al error: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
+                spec.Resource, recovered.DocEntry, recovered.DocNum, uSapId);
+            return recovered with { Recovered = true };
+        }
+
+        // Relanza conservando el stack original (equivale al `throw;` que antes vivía en el catch).
+        ExceptionDispatchInfo.Capture(inconclusive).Throw();
+        throw inconclusive;
     }
 
     /// <summary>SAP 400 que menciona el propio campo: "Property 'U_sap_id' of 'Document' is invalid" → el UDF no existe.</summary>
