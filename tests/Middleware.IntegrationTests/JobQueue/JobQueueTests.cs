@@ -20,7 +20,8 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
         _baseFactory = factory;
     }
 
-    private WebApplicationFactory<Program> CreateFactory(Mock<ISapGateway> gatewayMock, InMemoryJobQueueRepository jobRepository)
+    private WebApplicationFactory<Program> CreateFactory(
+        Mock<ISapGateway> gatewayMock, InMemoryJobQueueRepository jobRepository, int maxRetryAttempts = 5)
     {
         return _baseFactory.WithWebHostBuilder(builder =>
         {
@@ -29,7 +30,8 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
                 config.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["JobQueue:QueueAfterSeconds"] = "1",
-                    ["JobQueue:RetryBackoffSeconds:0"] = "1"
+                    ["JobQueue:RetryBackoffSeconds:0"] = "1",
+                    ["JobQueue:MaxRetryAttempts"] = maxRetryAttempts.ToString()
                 });
             });
 
@@ -139,6 +141,39 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task TransientFailure_ExhaustsRetries_ErrorMessageTellsTheLastFailure()
+    {
+        var gatewayMock = new Mock<ISapGateway>();
+        gatewayMock
+            .Setup(g => g.UpdateInventoryTransferRequestStatusAsync(396539, "0", It.IsAny<CancellationToken>()))
+            .Returns(() => Task.FromException(new HttpRequestException("The response ended prematurely.")));
+
+        var jobRepository = new InMemoryJobQueueRepository();
+        var client = CreateFactory(gatewayMock, jobRepository, maxRetryAttempts: 1).CreateClient();
+
+        var response = await client.PatchAsync(
+            "/api/v1/inventory-transfer-requests/396539/status",
+            JsonContent.Create(new { U_STATUS = "0" }));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        using var acceptedDoc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var jobId = acceptedDoc.RootElement.GetProperty("jobId").GetGuid();
+
+        // ~15 s: the in-memory "RetryBackoffSeconds:0" override does not replace index 0 — the
+        // configuration binder APPENDS bound array elements to the property's initializer array,
+        // so the first backoff stays at the default 15 s.
+        var job = await PollUntilTerminalAsync(client, jobId, TimeSpan.FromSeconds(40));
+
+        job.GetProperty("status").GetString().Should().Be("ERROR");
+        job.GetProperty("httpStatusCode").GetInt32().Should().Be(503);
+        job.GetProperty("error").GetString().Should()
+            .StartWith("SAP saturado: se agotaron los reintentos.")
+            .And.Contain("The response ended prematurely.",
+                "support needs the real reason (timeout, connection cut) to know whether to check SAP for the document");
+    }
+
+    [Fact]
     public async Task DuplicateRequestWhileJobInFlight_ReusesSameJob_DoesNotCallSapAgain()
     {
         var callCount = 0;
@@ -203,11 +238,12 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
     private static async Task<JsonElement> PollUntilTerminalAsync(HttpClient client, Guid jobId, TimeSpan timeout)
     {
         using var cts = new CancellationTokenSource(timeout);
-        while (true)
+        string? lastBody = null;
+        while (!cts.IsCancellationRequested)
         {
-            var response = await client.GetAsync($"/api/v1/jobs/{jobId}", cts.Token);
-            var body = await response.Content.ReadAsStringAsync(cts.Token);
-            var doc = JsonDocument.Parse(body);
+            var response = await client.GetAsync($"/api/v1/jobs/{jobId}");
+            lastBody = await response.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(lastBody);
             var status = doc.RootElement.GetProperty("status").GetString();
 
             if (status is "COMPLETADO" or "ERROR")
@@ -215,7 +251,9 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
                 return doc.RootElement;
             }
 
-            await Task.Delay(200, cts.Token);
+            await Task.Delay(200);
         }
+
+        throw new TimeoutException($"Job {jobId} did not reach a terminal state within {timeout}. Last body: {lastBody}");
     }
 }

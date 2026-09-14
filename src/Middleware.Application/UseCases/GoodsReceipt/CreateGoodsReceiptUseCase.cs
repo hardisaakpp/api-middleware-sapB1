@@ -36,6 +36,6 @@ public sealed class CreateGoodsReceiptUseCase : IUseCase<CreateGoodsReceiptReque
             request.Lines.Select(l => new NotifyWebPosGoodsReceiptLine(l.ItemCode, l.Quantity, l.WarehouseCode)).ToList(),
             cancellationToken);
 
-        return new GoodsReceiptResponse(result.DocEntry, result.DocNum, webPosSync);
+        return new GoodsReceiptResponse(result.DocEntry, result.DocNum, webPosSync, result.Recovered);
     }
 }

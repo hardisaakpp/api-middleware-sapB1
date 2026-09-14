@@ -71,7 +71,9 @@ public sealed class GetPurchaseOrderByDocNumUseCase
                 lock (sync)
                 {
                     foreach (var item in items)
+                    {
                         codeBarsByItemCode[item.ItemCode] = item.CodeBars;
+                    }
                 }
             }
             finally

@@ -205,7 +205,12 @@ public sealed record StockTransferDocumentResponse(
 
 public sealed record StockTransferDocumentLine(string ItemCode, decimal Quantity, string WarehouseCode);
 
-public sealed record DocumentCreatedResult(int DocEntry, int DocNum);
+/// <summary>
+/// Documento creado en SAP. <paramref name="Recovered"/> = true cuando NO se creó en esta llamada:
+/// ya existía con la misma clave de idempotencia (U_sap_id), sea por un intento anterior que venció
+/// por timeout o por un reenvío del módulo, y se devuelve el existente en vez de duplicarlo.
+/// </summary>
+public sealed record DocumentCreatedResult(int DocEntry, int DocNum, bool Recovered = false);
 
 public sealed record SapItemValidationData(
     string ItemCode,
