@@ -13,7 +13,9 @@ public sealed record CreateStockTransferWithBinsRequest(
     string? U_ORIGEN,
     int? Series,
     int? PriceList,
-    IReadOnlyList<StockTransferWithBinsLineDto> StockTransferLines
+    IReadOnlyList<StockTransferWithBinsLineDto> StockTransferLines,
+    // Clave de idempotencia opcional (UDF U_sap_id); ver docs/idempotencia-documentos.md.
+    string? U_sap_id = null
 );
 
 public sealed record StockTransferWithBinsLineDto(

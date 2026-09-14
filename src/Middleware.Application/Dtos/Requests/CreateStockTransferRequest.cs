@@ -1,4 +1,5 @@
 using FluentValidation;
+using Middleware.Application.Idempotency;
 
 namespace Middleware.Application.Dtos.Requests;
 
@@ -15,7 +16,10 @@ public sealed record CreateStockTransferRequest(
     int? Series = null,
     // Tag de sistema origen, mismo UDF que el resto de los Create*Request (Item, Liquidacion,
     // PurchaseOrder, StockTransfer Direct/BasedOnDocument/WithBins) -- opcional en todos ellos.
-    string? U_ORIGEN = null
+    string? U_ORIGEN = null,
+    // Clave de idempotencia opcional. Solo se escribe en SAP (UDF U_sap_id de OWTQ) si el módulo la
+    // envía; sin ella el comportamiento es el de siempre. Ver docs/idempotencia-documentos.md.
+    string? U_sap_id = null
 );
 
 public sealed record StockTransferLineDto(
@@ -34,6 +38,8 @@ public sealed class CreateStockTransferRequestValidator : AbstractValidator<Crea
     {
         RuleFor(x => x.FromWarehouse).NotEmpty().MaximumLength(8);
         RuleFor(x => x.ToWarehouse).NotEmpty().MaximumLength(8);
+        RuleFor(x => x.U_sap_id).MaximumLength(IdempotencyKey.MaxLength).Matches(IdempotencyKey.AllowedPattern)
+            .WithMessage(IdempotencyKey.FormatMessage);
         RuleFor(x => x.FromWarehouse).NotEqual(x => x.ToWarehouse)
             .WithMessage("FromWarehouse and ToWarehouse must be different.");
         // Requeridos por el módulo de reposición de mercadería, el consumidor actual de este
