@@ -33,7 +33,24 @@ Aplica a los 15 endpoints existentes que llaman a SAP (lectura y escritura por i
 | 3 | 30s |
 | 4 | 60s |
 | 5 | 120s |
-| — | 240s, y si este también falla por saturación → `ERROR`: "SAP saturado: se agotaron los reintentos." |
+| — | 240s, y si este también falla por saturación → `ERROR`: "SAP saturado: se agotaron los reintentos. Último error: …" |
+
+El mensaje final incluye el **último error** del reintento (p. ej. `The operation didn't complete
+within the allowed timeout of '00:00:30'`). Importa para soporte: un timeout no significa que SAP
+no haya creado el documento — solo que no respondió a tiempo.
+
+## Reintentos y documentos duplicados
+
+Reintentar un `POST` de creación tras un timeout es peligroso: SAP pudo haber confirmado el
+documento aunque el middleware no recibiera la respuesta (incidente 10/09/2026: 5 transferencias
+`based-on-document` creadas en SAP con el job en `ERROR`). Por eso `POST /stock-transfers/based-on-document`
+es idempotente por clave `U_sap_id` — la clave viaja en el payload encolado y cada intento primero
+busca el documento en SAP antes de crearlo, y vuelve a buscarlo si el POST falla. El mismo flujo
+aplica a `/stock-transfers/with-bins`, `POST /stock-transfers` (for-company), `/stock-transfers/requests`,
+`/goods-receipts`, `/deposits`, `/purchase-orders` y `/liquidaciones`, con un GUID generado por el middleware cuando el
+módulo no envía `u_sap_id`. `/direct` solo recupera tras timeout cuando el cliente envía `u_sap_id`
+(sin verificación previa, por contrato con su consumidor). Convención y prerequisitos:
+[idempotencia-documentos.md](idempotencia-documentos.md).
 
 Máximo **5 reintentos** (`JobQueue:MaxRetryAttempts` en `appsettings.json`), con las esperas de arriba (`JobQueue:RetryBackoffSeconds`). Un error de negocio real de SAP (400/404) no consume reintentos: pasa a `ERROR` de inmediato.
 

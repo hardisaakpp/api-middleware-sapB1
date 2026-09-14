@@ -1,4 +1,5 @@
 using FluentValidation;
+using Middleware.Application.Idempotency;
 
 namespace Middleware.Application.Dtos.Requests;
 
@@ -6,7 +7,10 @@ public sealed record CreateGoodsReceiptRequest(
     string VendorCode,
     DateOnly DocDate,
     string? Comments,
-    IReadOnlyList<GoodsReceiptLineDto> Lines
+    IReadOnlyList<GoodsReceiptLineDto> Lines,
+    // Clave de idempotencia opcional. Solo se escribe en SAP (UDF U_sap_id de PurchaseDeliveryNotes)
+    // si el módulo la envía; sin ella el comportamiento es el de siempre. Ver docs/idempotencia-documentos.md.
+    string? U_sap_id = null
 );
 
 public sealed record GoodsReceiptLineDto(
@@ -27,6 +31,8 @@ public sealed class CreateGoodsReceiptRequestValidator : AbstractValidator<Creat
     public CreateGoodsReceiptRequestValidator()
     {
         RuleFor(x => x.VendorCode).NotEmpty().MaximumLength(15);
+        RuleFor(x => x.U_sap_id).MaximumLength(IdempotencyKey.MaxLength).Matches(IdempotencyKey.AllowedPattern)
+            .WithMessage(IdempotencyKey.FormatMessage);
         RuleFor(x => x.Lines).NotEmpty();
         RuleForEach(x => x.Lines).ChildRules(line =>
         {

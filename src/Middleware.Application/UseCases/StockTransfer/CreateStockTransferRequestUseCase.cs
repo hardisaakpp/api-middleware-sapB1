@@ -26,6 +26,6 @@ public sealed class CreateStockTransferRequestUseCase : IUseCase<CreateStockTran
 
         _logger.LogInformation("StockTransferRequest created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
 
-        return new StockTransferResponse(result.DocEntry, result.DocNum);
+        return new StockTransferResponse(result.DocEntry, result.DocNum, null, result.Recovered);
     }
 }

@@ -1,4 +1,5 @@
 using FluentValidation;
+using Middleware.Application.Idempotency;
 using Middleware.Domain.Enums;
 
 namespace Middleware.Application.Dtos.Requests;
@@ -8,7 +9,10 @@ public sealed record CreateDepositRequest(
     CompanyEnvironment Environment,
     DateOnly DocDate,
     string? Comments,
-    IReadOnlyList<DepositLineDto> Lines
+    IReadOnlyList<DepositLineDto> Lines,
+    // Clave de idempotencia opcional. Solo se escribe en SAP (UDF U_sap_id de InventoryGenEntries)
+    // si el módulo la envía; sin ella el comportamiento es el de siempre. Ver docs/idempotencia-documentos.md.
+    string? U_sap_id = null
 );
 
 public sealed record DepositLineDto(
@@ -23,6 +27,8 @@ public sealed class CreateDepositRequestValidator : AbstractValidator<CreateDepo
     {
         RuleFor(x => x.Type).IsInEnum();
         RuleFor(x => x.Environment).IsInEnum();
+        RuleFor(x => x.U_sap_id).MaximumLength(IdempotencyKey.MaxLength).Matches(IdempotencyKey.AllowedPattern)
+            .WithMessage(IdempotencyKey.FormatMessage);
         RuleFor(x => x.Lines).NotEmpty();
         RuleForEach(x => x.Lines).ChildRules(line =>
         {

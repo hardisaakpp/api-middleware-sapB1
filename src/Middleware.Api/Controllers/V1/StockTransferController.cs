@@ -3,6 +3,7 @@ using System.Text.Json;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using Middleware.Api.Idempotency;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
@@ -37,6 +38,15 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         [FromBody] CreateStockTransferBasedOnDocumentRequest request,
         CancellationToken cancellationToken)
     {
+        // Con GUID de respaldo: OWTR comparte el UDF de documentos de marketing; si en Sap:CompanyDb
+        // faltara, el gateway crea sin clave y lo registra como error.
+        var (key, problem) = IdempotencyKeyResolver.Resolve(Request, request.U_sap_id, generateWhenMissing: true);
+        if (problem is not null)
+        {
+            return BadRequest(problem);
+        }
+
+        request = request with { U_sap_id = key };
         var payloadJson = JsonSerializer.Serialize(request);
 
         var outcome = await _jobCoordinator.ExecuteAsync(
@@ -63,6 +73,16 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         [FromBody] CreateStockTransferBasedOnDocumentRequest request,
         CancellationToken cancellationToken)
     {
+        // La clave viaja dentro del payload encolado para que TODOS los reintentos del job (y la
+        // recuperación tras un reinicio) usen la misma y no creen un segundo documento. Aquí sí se
+        // genera un GUID si el módulo no envía clave: el UDF U_sap_id existe en OWTR (TestCompanyDb).
+        var (key, problem) = IdempotencyKeyResolver.Resolve(Request, request.U_sap_id, generateWhenMissing: true);
+        if (problem is not null)
+        {
+            return BadRequest(problem);
+        }
+
+        request = request with { U_sap_id = key };
         var payloadJson = JsonSerializer.Serialize(request);
 
         var outcome = await _jobCoordinator.ExecuteAsync(
@@ -115,6 +135,13 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         [FromBody] CreateStockTransferWithBinsRequest request,
         CancellationToken cancellationToken)
     {
+        var (key, problem) = IdempotencyKeyResolver.Resolve(Request, request.U_sap_id, generateWhenMissing: true);
+        if (problem is not null)
+        {
+            return BadRequest(problem);
+        }
+
+        request = request with { U_sap_id = key };
         var payloadJson = JsonSerializer.Serialize(request);
 
         var outcome = await _jobCoordinator.ExecuteAsync(
@@ -141,6 +168,15 @@ public sealed class StockTransferController : ControllerBase // NOSONAR
         [FromBody] CreateStockTransferRequest request,
         CancellationToken cancellationToken)
     {
+        // Con GUID de respaldo: el UDF U_sap_id existe en OWTQ (60, confirmado 14/09/2026 en prueba y
+        // producción), así que los reintentos de la cola quedan protegidos aunque el módulo no envíe clave.
+        var (key, problem) = IdempotencyKeyResolver.Resolve(Request, request.U_sap_id, generateWhenMissing: true);
+        if (problem is not null)
+        {
+            return BadRequest(problem);
+        }
+
+        request = request with { U_sap_id = key };
         var payloadJson = JsonSerializer.Serialize(request);
 
         var outcome = await _jobCoordinator.ExecuteAsync(
