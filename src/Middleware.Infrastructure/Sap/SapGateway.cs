@@ -47,7 +47,11 @@ internal sealed class SapGateway : ISapGateway
     private const string ItemNameProperty = "ItemName";
     private const string BarCodeProperty = "BarCode";
     private const string ItemWarehouseInfoCollectionProperty = "ItemWarehouseInfoCollection";
+    private const string ItemDescriptionProperty = "ItemDescription";
+    private const string LineNumProperty = "LineNum";
+    private const string ValidProperty = "Valid";
     private const string StockTransfersResource = "StockTransfers";
+    private const string PurchaseDeliveryNotesResource = "PurchaseDeliveryNotes";
 
     public SapGateway(
         ISapSessionManager sessionManager,
@@ -538,7 +542,7 @@ internal sealed class SapGateway : ISapGateway
 
             lines.Add(new StockTransferLineStatusResponse(
                 LineStr("ItemCode"),
-                LineStr("ItemDescription"),
+                LineStr(ItemDescriptionProperty),
                 LineDec(QuantityProperty),
                 LineDec("RemainingOpenQuantity")
             ));
@@ -659,7 +663,7 @@ internal sealed class SapGateway : ISapGateway
         // artículos si la entrada no referencia órdenes).
         var requestLines = request.Lines.Select(l => (l.ItemCode, l.BaseEntry)).ToList();
         var spec = new IdempotentCreateSpec(
-            "PurchaseDeliveryNotes", "DocEntry,DocNum,CardCode,DocumentLines", null, null,
+            PurchaseDeliveryNotesResource, "DocEntry,DocNum,CardCode,DocumentLines", null, null,
             found => string.Equals(StringOrEmpty(found, "CardCode"), request.VendorCode, StringComparison.OrdinalIgnoreCase)
                      && HasSameOrigin(found, DocumentLinesProperty, requestLines, request.U_sap_id));
         return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
@@ -764,7 +768,7 @@ internal sealed class SapGateway : ISapGateway
             var node = new Dictionary<string, object?>
             {
                 ["AccountCode"] = NormalizeLiquidacionAccountCode(line.AccountCode),
-                ["ItemDescription"] = line.ItemDescription,
+                [ItemDescriptionProperty] = line.ItemDescription,
                 [QuantityProperty] = line.Quantity,
                 ["UnitPrice"] = line.UnitPrice,
                 ["TaxCode"] = line.TaxCode,
@@ -924,11 +928,13 @@ internal sealed class SapGateway : ISapGateway
             }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
+        string? OptionalString(JsonElement el, string field) =>
+            el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 
         var lines = root.TryGetProperty(DocumentLinesProperty, out var linesEl)
             ? linesEl.EnumerateArray()
                 .Select((l, i) => new PurchaseOrderLineResponse(
-                    RequiredInt(l, "LineNum", $"DocumentLines[{i}]"),
+                    RequiredInt(l, LineNumProperty, $"DocumentLines[{i}]"),
                     RequiredString(l, ItemCodeProperty, $"DocumentLines[{i}]"),
                     RequiredDecimal(l, QuantityProperty, $"DocumentLines[{i}]"),
                     // El nombre real en SAP Service Layer es "RemainingOpenQuantity" —
@@ -936,7 +942,8 @@ internal sealed class SapGateway : ISapGateway
                     // PurchaseOrder con líneas reales (ver hallazgo de api-cedi, mismo bug).
                     RequiredDecimal(l, "RemainingOpenQuantity", $"DocumentLines[{i}]"),
                     RequiredDecimal(l, "UnitPrice", $"DocumentLines[{i}]"),
-                    RequiredString(l, WarehouseCodeProperty, $"DocumentLines[{i}]")
+                    RequiredString(l, WarehouseCodeProperty, $"DocumentLines[{i}]"),
+                    ItemDescription: OptionalString(l, ItemDescriptionProperty)
                 )).ToList()
             : (IReadOnlyList<PurchaseOrderLineResponse>)[];
 
@@ -946,8 +953,31 @@ internal sealed class SapGateway : ISapGateway
             RequiredString(root, "CardCode", "root"),
             RequiredString(root, DocDateProperty, "root"),
             RequiredString(root, "DocumentStatus", "root"),
-            lines
+            lines,
+            CardName: OptionalString(root, "CardName"),
+            DocDueDate: OptionalString(root, "DocDueDate")
         );
+    }
+
+    public async Task<int?> GetPurchaseOrderDocEntryByDocNumAsync(int docNum, CancellationToken ct = default)
+    {
+        var resource = $"PurchaseOrders?$filter=DocNum eq {docNum}&$select=DocEntry&$orderby=DocEntry desc&$top=1";
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
+        {
+            return null;
+        }
+
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.TryGetProperty(DocEntryProperty, out var de) && de.TryGetInt32(out var docEntry))
+            {
+                return docEntry;
+            }
+        }
+
+        return null;
     }
 
     public async Task<PurchaseOrdersListResponse> GetPurchaseOrdersAsync(GetPurchaseOrdersRequest request, CancellationToken ct = default)
@@ -1114,7 +1144,7 @@ internal sealed class SapGateway : ISapGateway
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
         [FrozenProperty] = r.Frozen,
-        ["Valid"] = r.Valid,
+        [ValidProperty] = r.Valid,
         ["ValidFrom"] = r.ValidFrom,
         ["ValidTo"] = r.ValidTo,
         ["FrozenFrom"] = r.FrozenFrom,
@@ -1184,7 +1214,7 @@ internal sealed class SapGateway : ISapGateway
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
         [FrozenProperty] = r.Frozen,
-        ["Valid"] = r.Valid,
+        [ValidProperty] = r.Valid,
         ["ValidFrom"] = r.ValidFrom,
         ["ValidTo"] = r.ValidTo,
         ["FrozenFrom"] = r.FrozenFrom,
@@ -1388,7 +1418,7 @@ internal sealed class SapGateway : ISapGateway
             IsTyes(root, PurchaseItemProperty),
             IsTyes(root, "SalesItem"),
             IsTyes(root, "InventoryItem"),
-            IsTyes(root, "Valid"),
+            IsTyes(root, ValidProperty),
             IsTyes(root, FrozenProperty),
             StrOpt("ItemType"),
             StrOptNormalized("U_IXX_PACK"),
@@ -1845,6 +1875,76 @@ internal sealed class SapGateway : ISapGateway
         return lines;
     }
 
+    // SAP Service Layer no soporta filtrar PurchaseDeliveryNotes por un campo de su coleccion
+    // hija DocumentLines — probado en vivo contra el sandbox: tanto la sintaxis OData v4
+    // "DocumentLines/any(d:d/BaseEntry eq X)" como "DocumentLines/BaseEntry eq X" devuelven 400
+    // ("Invalid symbol"/"Property ... is invalid"). Se filtra por CardCode (header, si soportado)
+    // y se descartan en C# las lineas cuyo BaseEntry no coincide — mismo patron que la
+    // verificacion de "mismo pedido" de la idempotencia (HasSameOrigin). $top acotado: los
+    // Goods Receipt de una ODC se crean
+    // en una ventana de tiempo corta despues de ella, orderby desc trae los mas recientes primero.
+    public async Task<IReadOnlyList<GoodsReceiptForPurchaseOrderResponse>> GetGoodsReceiptsByBaseEntryAsync(
+        int baseEntry, string vendorCode, CancellationToken ct = default)
+    {
+        var resource = $"{PurchaseDeliveryNotesResource}?$filter=CardCode eq '{vendorCode}'" +
+            "&$select=DocEntry,DocNum,DocDate,DocumentLines&$orderby=DocEntry desc&$top=100";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
+        {
+            return [];
+        }
+
+        var result = new List<GoodsReceiptForPurchaseOrderResponse>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            var lines = ParseGoodsReceiptLinesForBaseEntry(item, baseEntry);
+            if (lines.Count == 0)
+            {
+                continue;
+            }
+
+            result.Add(new GoodsReceiptForPurchaseOrderResponse(
+                IntOrZero(item, DocEntryProperty), IntOrZero(item, DocNumProperty), StringOrEmpty(item, DocDateProperty), lines));
+        }
+
+        return result;
+    }
+
+    // Solo las lineas que efectivamente satisfacen baseEntry — un mismo Goods Receipt puede traer
+    // lineas de otras ODCs.
+    private static List<GoodsReceiptForPurchaseOrderLine> ParseGoodsReceiptLinesForBaseEntry(JsonElement root, int baseEntry)
+    {
+        var lines = new List<GoodsReceiptForPurchaseOrderLine>();
+        if (!root.TryGetProperty(DocumentLinesProperty, out var linesEl) || linesEl.ValueKind != JsonValueKind.Array)
+        {
+            return lines;
+        }
+
+        foreach (var line in linesEl.EnumerateArray())
+        {
+            if (!line.TryGetProperty("BaseEntry", out var beEl) || !beEl.TryGetInt32(out var lineBaseEntry) || lineBaseEntry != baseEntry)
+            {
+                continue;
+            }
+
+            var itemCode = StringOrNull(line, ItemCodeProperty);
+            if (itemCode is null)
+            {
+                continue;
+            }
+
+            var lineNum = line.TryGetProperty(LineNumProperty, out var lnEl) && lnEl.TryGetInt32(out var lnVal) ? lnVal : 0;
+            var baseLine = line.TryGetProperty("BaseLine", out var blEl) && blEl.TryGetInt32(out var blVal) ? blVal : 0;
+
+            lines.Add(new GoodsReceiptForPurchaseOrderLine(lineNum, itemCode, DecimalOrZero(line, QuantityProperty), lineBaseEntry, baseLine));
+        }
+
+        return lines;
+    }
+
     /// <summary>
     /// Master-data fields WEBPOS needs to auto-create an item/store pair the first time it sees
     /// it ("El producto no existe."). Same source fields ProductosMabel already uses to create
@@ -2099,7 +2199,7 @@ internal sealed class SapGateway : ISapGateway
             StrOpt("Currency"),
             StrOpt("Phone1"),
             StrOpt("EmailAddress"),
-            Valid: IsTyes(root, "Valid"),
+            Valid: IsTyes(root, ValidProperty),
             Frozen: IsTyes(root, FrozenProperty)
         );
     }
@@ -2128,7 +2228,7 @@ internal sealed class SapGateway : ISapGateway
 
             var lines = item.TryGetProperty(StockTransferLinesProperty, out var linesEl)
                 ? linesEl.EnumerateArray().Select((l, i) => new InventoryTransferRequestLineResponse(
-                    l.TryGetProperty("LineNum", out var ln) && ln.TryGetInt32(out var lv) ? lv : i,
+                    l.TryGetProperty(LineNumProperty, out var ln) && ln.TryGetInt32(out var lv) ? lv : i,
                     l.TryGetProperty(ItemCodeProperty, out var li) && li.ValueKind == JsonValueKind.String ? li.GetString()! : string.Empty,
                     l.TryGetProperty(QuantityProperty, out var lq) && lq.TryGetDecimal(out var lqv) ? lqv : 0m,
                     l.TryGetProperty(WarehouseCodeProperty, out var lw) && lw.ValueKind == JsonValueKind.String ? lw.GetString() : null
@@ -2230,14 +2330,14 @@ internal sealed class SapGateway : ISapGateway
         var lines = root.TryGetProperty(StockTransferLinesProperty, out var linesEl)
             ? linesEl.EnumerateArray()
                 .Select((l, i) => new InventoryTransferRequestLineResponse(
-                    RequiredInt(l, "LineNum", $"StockTransferLines[{i}]"),
+                    RequiredInt(l, LineNumProperty, $"StockTransferLines[{i}]"),
                     RequiredString(l, ItemCodeProperty, $"StockTransferLines[{i}]"),
                     RequiredDecimal(l, QuantityProperty, $"StockTransferLines[{i}]"),
                     RequiredString(l, WarehouseCodeProperty, $"StockTransferLines[{i}]"),
                     // Confirmado en vivo contra TEST_MABEL: el campo real es "RemainingOpenQuantity"
                     // (mismo nombre que en PurchaseOrders) — no "OpenQuantity".
                     RequiredDecimal(l, "RemainingOpenQuantity", $"StockTransferLines[{i}]"),
-                    OptString(l, "ItemDescription"),
+                    OptString(l, ItemDescriptionProperty),
                     OptString(l, "FromWarehouseCode")
                 )).ToList()
             : (IReadOnlyList<InventoryTransferRequestLineResponse>)[];
@@ -2298,7 +2398,7 @@ internal sealed class SapGateway : ISapGateway
             ic.GetString()!,
             item.TryGetProperty(ItemNameProperty, out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
             IsTyes(item, PurchaseItemProperty),
-            IsTyes(item, "Valid"),
+            IsTyes(item, ValidProperty),
             IsTyes(item, FrozenProperty),
             item.TryGetProperty(InventoryUomProperty, out var uom) && uom.ValueKind == JsonValueKind.String ? uom.GetString() : null,
             ParseItemWarehouses(item)
@@ -2462,9 +2562,9 @@ internal sealed class SapGateway : ISapGateway
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            _logger.LogInformation(
+            _logger.LogInformation( // NOSONAR
                 "SAP Item '{ItemCode}' not found while checking movements; returning false",
-                itemCode); // NOSONAR
+                itemCode);
             return false;
         }
 

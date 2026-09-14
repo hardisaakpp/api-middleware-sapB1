@@ -173,6 +173,68 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
                 "support needs the real reason (timeout, connection cut) to know whether to check SAP for the document");
     }
 
+    [Fact]
+    public async Task DuplicateRequestWhileJobInFlight_ReusesSameJob_DoesNotCallSapAgain()
+    {
+        var callCount = 0;
+        var gatewayMock = new Mock<ISapGateway>();
+        gatewayMock
+            .Setup(g => g.UpdateInventoryTransferRequestStatusAsync(396539, "1", It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                callCount++;
+                await Task.Delay(TimeSpan.FromSeconds(3));
+            });
+
+        var jobRepository = new InMemoryJobQueueRepository();
+        var client = CreateFactory(gatewayMock, jobRepository).CreateClient();
+
+        var firstRequestTask = client.PatchAsync(
+            "/api/v1/inventory-transfer-requests/396539/status",
+            JsonContent.Create(new { U_STATUS = "1" }));
+
+        // El primer intento solo se encola despues de QueueAfterSeconds (1s en esta factory);
+        // esperamos a que eso ocurra para simular un reintento manual del usuario mientras el
+        // job anterior ya esta en curso (no una carrera de milisegundos).
+        await WaitUntilAsync(() => jobRepository.Count > 0, TimeSpan.FromSeconds(5));
+
+        var secondResponse = await client.PatchAsync(
+            "/api/v1/inventory-transfer-requests/396539/status",
+            JsonContent.Create(new { U_STATUS = "1" }));
+
+        var firstResponse = await firstRequestTask;
+
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        secondResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        using var firstDoc = JsonDocument.Parse(await firstResponse.Content.ReadAsStringAsync());
+        using var secondDoc = JsonDocument.Parse(await secondResponse.Content.ReadAsStringAsync());
+
+        var firstJobId = firstDoc.RootElement.GetProperty("jobId").GetGuid();
+        var secondJobId = secondDoc.RootElement.GetProperty("jobId").GetGuid();
+
+        secondJobId.Should().Be(firstJobId, "a duplicate request for the same in-flight job must reuse it instead of starting a new SAP attempt");
+        jobRepository.Count.Should().Be(1, "only one job row should exist for the duplicate request");
+
+        await PollUntilTerminalAsync(client, firstJobId, TimeSpan.FromSeconds(10));
+
+        callCount.Should().Be(1, "the duplicate request must not trigger a second call to SAP");
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        while (!condition())
+        {
+            if (cts.IsCancellationRequested)
+            {
+                throw new TimeoutException("Condition was not met in time.");
+            }
+
+            await Task.Delay(50, CancellationToken.None);
+        }
+    }
+
     private static async Task<JsonElement> PollUntilTerminalAsync(HttpClient client, Guid jobId, TimeSpan timeout)
     {
         using var cts = new CancellationTokenSource(timeout);

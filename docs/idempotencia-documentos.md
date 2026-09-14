@@ -67,6 +67,16 @@ nunca impide crear el documento.
 Aclaración de nombres: lo que el middleware llama `deposits` es la **Entrada de mercancías de
 Inventario** (`InventoryGenEntries`, OIGN), no el Depósito bancario (ODPS), que el middleware no crea.
 
+## Relación con la deduplicación de jobs en curso
+
+La cola también reutiliza un job `ENCOLADO`/`PROCESANDO` cuando llega otra petición con **exactamente
+el mismo payload** (mismo endpoint y JSON idéntico), para que un usuario que reintenta a mano mientras
+SAP está caído no dispare cadenas paralelas de intentos. Como la clave viaja dentro del payload, esa
+deduplicación funciona plenamente cuando el módulo envía su propia `u_sap_id` (dos reenvíos de la
+misma operación producen el mismo JSON). Cuando el middleware genera el GUID de respaldo, cada petición
+es distinta y la deduplicación de jobs en curso no aplica a ese endpoint; la protección queda a cargo
+de la idempotencia contra SAP. Motivo más para que cada módulo envíe su clave.
+
 ## Convenciones del identificador
 
 1. **Nombre del campo**: `u_sap_id`, opcional, en el cuerpo JSON de todos los endpoints de creación
