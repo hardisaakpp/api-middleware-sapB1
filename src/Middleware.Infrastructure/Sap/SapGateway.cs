@@ -33,6 +33,7 @@ internal sealed class SapGateway : ISapGateway
 
     private const string ValueProperty = "value";
     private const string DocEntryProperty = "DocEntry";
+    private const string CardCodeProperty = CardCodeProperty;
     private const string DocNumProperty = "DocNum";
     private const string QuantityProperty = "Quantity";
     private const string ItemCodeProperty = "ItemCode";
@@ -668,7 +669,7 @@ internal sealed class SapGateway : ISapGateway
         var requestLines = request.Lines.Select(l => (l.ItemCode, l.BaseEntry)).ToList();
         var spec = new IdempotentCreateSpec(
             "PurchaseDeliveryNotes", "DocEntry,DocNum,CardCode,DocumentLines", null, null,
-            found => string.Equals(StringOrEmpty(found, "CardCode"), request.VendorCode, StringComparison.OrdinalIgnoreCase)
+            found => string.Equals(StringOrEmpty(found, CardCodeProperty), request.VendorCode, StringComparison.OrdinalIgnoreCase)
                      && HasSameOrigin(found, DocumentLinesProperty, requestLines, request.U_sap_id));
         return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
     }
@@ -719,7 +720,7 @@ internal sealed class SapGateway : ISapGateway
         var requestLines = request.Lines.Select(l => (l.ItemCode, (int?)null)).ToList();
         var spec = new IdempotentCreateSpec(
             "PurchaseOrders", "DocEntry,DocNum,CardCode,DocumentLines", null, null,
-            found => string.Equals(StringOrEmpty(found, "CardCode"), request.CardCode, StringComparison.OrdinalIgnoreCase)
+            found => string.Equals(StringOrEmpty(found, CardCodeProperty), request.CardCode, StringComparison.OrdinalIgnoreCase)
                      && HasSameOrigin(found, DocumentLinesProperty, requestLines, request.U_sap_id));
         return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
     }
@@ -732,7 +733,7 @@ internal sealed class SapGateway : ISapGateway
 
         var payload = new Dictionary<string, object?>
         {
-            ["CardCode"] = request.CardCode,
+            [CardCodeProperty] = request.CardCode,
             ["DocType"] = NormalizeLiquidacionText(request.DocType) ?? "dDocument_Service",
             [DocDateProperty] = today,
             ["DocDueDate"] = today,
@@ -809,7 +810,7 @@ internal sealed class SapGateway : ISapGateway
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var spec = new IdempotentCreateSpec(
             "PurchaseInvoices", "DocEntry,DocNum,CardCode,DocumentLines", null, null,
-            found => string.Equals(StringOrEmpty(found, "CardCode"), request.CardCode, StringComparison.OrdinalIgnoreCase)
+            found => string.Equals(StringOrEmpty(found, CardCodeProperty), request.CardCode, StringComparison.OrdinalIgnoreCase)
                      && HasSameAccounts(found, requestAccounts));
 
         try
@@ -951,7 +952,7 @@ internal sealed class SapGateway : ISapGateway
         return new PurchaseOrderResponse(
             RequiredInt(root, DocEntryProperty, "root"),
             RequiredInt(root, DocNumProperty, "root"),
-            RequiredString(root, "CardCode", "root"),
+            RequiredString(root, CardCodeProperty, "root"),
             RequiredString(root, DocDateProperty, "root"),
             RequiredString(root, "DocumentStatus", "root"),
             lines
@@ -2101,7 +2102,7 @@ internal sealed class SapGateway : ISapGateway
             root.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 
         return new BusinessPartnerResponse(
-            Str("CardCode"),
+            Str(CardCodeProperty),
             Str("CardName"),
             Str("CardType"),
             StrOpt("Currency"),
