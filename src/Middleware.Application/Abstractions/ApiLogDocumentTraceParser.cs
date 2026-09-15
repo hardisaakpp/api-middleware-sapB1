@@ -30,7 +30,7 @@ public static class ApiLogDocumentTraceParser
         }
     }
 
-    private static IReadOnlyList<string> ReadWarehouses(string docType, string? request)
+    private static List<string> ReadWarehouses(string docType, string? request)
     {
         if (string.IsNullOrWhiteSpace(request))
         {
