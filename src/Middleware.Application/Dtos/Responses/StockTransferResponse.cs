@@ -10,8 +10,10 @@ public sealed record StockTransferStatusResponse(
 );
 
 public sealed record StockTransferLineStatusResponse(
+    int LineNum,
     string ItemCode,
     string ItemDescription,
+    
     //quantity
     decimal SentQuantity,
     decimal RemainingOpenQuantity

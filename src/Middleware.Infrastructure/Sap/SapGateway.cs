@@ -7,6 +7,7 @@ using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
 using Middleware.Infrastructure.Configuration;
+using Middleware.Infrastructure.Jobs;
 using Polly.Timeout;
 
 namespace Middleware.Infrastructure.Sap;
@@ -67,6 +68,7 @@ internal sealed class SapGateway : ISapGateway
             FromWarehouse = request.FromWarehouse, // NOSONAR
             ToWarehouse = request.ToWarehouse, // NOSONAR
             request.U_ORIGEN,
+            request.U_sap_id,
             request.Series,
             // PriceList -2 = "Último precio determinado" (config SAP) si el cliente no lo especifica.
             PriceList = request.PriceList ?? -2,
@@ -81,9 +83,7 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
-        var json = await ExecuteWithRetryOn401Async(
-            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
-        return ParseDocumentResult(json);
+        return await CreateStockTransferWithRecoveryAsync(payload, request.U_sap_id, ct);
     }
 
     public async Task<DocumentCreatedResult> CreateStockTransferDirectAsync(CreateStockTransferDirectRequest request, CancellationToken ct = default)
@@ -113,28 +113,7 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
-        try
-        {
-            var json = await ExecuteWithRetryOn401Async(
-                HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
-            return ParseDocumentResult(json);
-        }
-        catch (TimeoutRejectedException) when (!string.IsNullOrEmpty(request.U_sap_id))
-        {
-            _logger.LogWarning( // NOSONAR
-                "SAP POST StockTransfers timed out for U_sap_id={USapId}. Checking for orphaned transfer...",
-                request.U_sap_id);
-
-            var recovered = await FindStockTransferByCorrelationIdAsync(request.U_sap_id, ct);
-            if (recovered is not null)
-            {
-                _logger.LogWarning( // NOSONAR
-                    "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
-                    recovered.DocEntry, recovered.DocNum, request.U_sap_id);
-                return recovered;
-            }
-            throw;
-        }
+        return await CreateStockTransferWithRecoveryAsync(payload, request.U_sap_id, ct);
     }
 
     private async Task<DocumentCreatedResult?> FindStockTransferByCorrelationIdAsync(string uSapId, CancellationToken ct)
@@ -258,11 +237,13 @@ internal sealed class SapGateway : ISapGateway
         foreach (var line in linesEl.EnumerateArray())
         {
             string LineStr(string f) => line.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
+            int LineInt(string f) => line.TryGetProperty(f, out var p) && p.TryGetInt32(out var v) ? v : 0;
             decimal LineDec(string f) => line.TryGetProperty(f, out var p) && p.TryGetDecimal(out var v) ? v : 0m;
 
             lines.Add(new StockTransferLineStatusResponse(
+                LineInt("LineNum"),
                 LineStr("ItemCode"),
-                LineStr("ItemDescription"),
+                LineStr("ItemDescription"),                
                 LineDec(QuantityProperty),
                 LineDec("RemainingOpenQuantity")
             ));
@@ -1589,4 +1570,37 @@ internal sealed class SapGateway : ISapGateway
 
         return new DocumentCreatedResult(docEntry, docNum);
     }
+
+    // Evita crear un StockTransfer duplicado si el cliente (o la cola de reintentos) reintenta
+    // tras un error transitorio: si SAP sí llegó a crear el documento aunque la respuesta no
+    // alcanzó a llegar, lo recuperamos por U_sap_id en vez de crear uno nuevo. Se usa el mismo
+    // criterio de "transitorio" que JobExceptionClassifier, porque son justo los errores donde
+    // no se puede saber si SAP procesó el POST antes de fallar. Compartido entre los distintos
+    // POST de StockTransfers.
+    private async Task<DocumentCreatedResult> CreateStockTransferWithRecoveryAsync(
+        string payload, string? uSapId, CancellationToken ct)
+    {
+        try
+        {
+            var json = await ExecuteWithRetryOn401Async(
+                HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
+            return ParseDocumentResult(json);
+        }
+        catch (Exception ex) when (!string.IsNullOrEmpty(uSapId) && JobExceptionClassifier.IsTransient(ex))
+        {
+            _logger.LogWarning(ex,// NOSONAR
+                "SAP POST StockTransfers failed transiently for U_sap_id={USapId}. Checking for orphaned transfer...", uSapId);
+
+            var recovered = await FindStockTransferByCorrelationIdAsync(uSapId, ct);
+            if (recovered is not null)
+            {
+                _logger.LogWarning(// NOSONAR
+                    "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
+                    recovered.DocEntry, recovered.DocNum, uSapId);
+                return recovered;
+            }
+            throw;
+        }
+    }
+
 }

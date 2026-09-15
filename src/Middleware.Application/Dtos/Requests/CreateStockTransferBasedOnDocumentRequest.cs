@@ -13,7 +13,8 @@ public sealed record CreateStockTransferBasedOnDocumentRequest(
     string? U_ORIGEN,
     int? Series,
     int? PriceList,
-    IReadOnlyList<StockTransferBasedOnDocumentLineDto> StockTransferLines
+    IReadOnlyList<StockTransferBasedOnDocumentLineDto> StockTransferLines,
+    string? U_sap_id
 );
 
 public sealed record StockTransferBasedOnDocumentLineDto(
