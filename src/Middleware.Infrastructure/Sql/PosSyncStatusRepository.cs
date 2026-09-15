@@ -11,6 +11,8 @@ namespace Middleware.Infrastructure.Sql;
 internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
 {
     private const string Columns = "doc_type, doc_entry, doc_num, status, reason, attempts, created_at, updated_at, warehouses";
+    private const string DocTypeParameter = "@docType";
+    private const string DocEntryParameter = "@docEntry";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -41,8 +43,8 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
             """;
 
         await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
-        cmd.Parameters.AddWithValue("@docType", docType);
-        cmd.Parameters.AddWithValue("@docEntry", docEntry);
+        cmd.Parameters.AddWithValue(DocTypeParameter, docType);
+        cmd.Parameters.AddWithValue(DocEntryParameter, docEntry);
         cmd.Parameters.AddWithValue("@docNum", (object?)docNum ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@status", status);
         cmd.Parameters.AddWithValue("@reason", (object?)reason ?? DBNull.Value);
@@ -63,8 +65,8 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
             """;
 
         await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
-        cmd.Parameters.AddWithValue("@docType", docType);
-        cmd.Parameters.AddWithValue("@docEntry", docEntry);
+        cmd.Parameters.AddWithValue(DocTypeParameter, docType);
+        cmd.Parameters.AddWithValue(DocEntryParameter, docEntry);
         cmd.Parameters.AddWithValue("@docNum", docNum);
 
         await cmd.ExecuteNonQueryAsync(ct);
@@ -86,8 +88,8 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
             """;
 
         await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
-        cmd.Parameters.AddWithValue("@docType", docType);
-        cmd.Parameters.AddWithValue("@docEntry", docEntry);
+        cmd.Parameters.AddWithValue(DocTypeParameter, docType);
+        cmd.Parameters.AddWithValue(DocEntryParameter, docEntry);
         cmd.Parameters.Add("@warehouses", SqlDbType.NVarChar, -1).Value = JsonSerializer.Serialize(warehouses, JsonOptions);
 
         await cmd.ExecuteNonQueryAsync(ct);
@@ -105,8 +107,8 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
             """;
 
         await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 10 };
-        cmd.Parameters.AddWithValue("@docType", docType);
-        cmd.Parameters.AddWithValue("@docEntry", docEntry);
+        cmd.Parameters.AddWithValue(DocTypeParameter, docType);
+        cmd.Parameters.AddWithValue(DocEntryParameter, docEntry);
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? MapEntry(reader) : null;
@@ -139,8 +141,8 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
 
         await using var cmd = new SqlCommand(sql, connection) { CommandTimeout = 15 };
         cmd.Parameters.AddWithValue("@status", (object?)filter.Status ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@docType", (object?)filter.DocType ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@docEntry", (object?)filter.DocEntry ?? DBNull.Value);
+        cmd.Parameters.AddWithValue(DocTypeParameter, (object?)filter.DocType ?? DBNull.Value);
+        cmd.Parameters.AddWithValue(DocEntryParameter, (object?)filter.DocEntry ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@docNum", (object?)filter.DocNum ?? DBNull.Value);
         cmd.Parameters.Add("@from", SqlDbType.DateTime2).Value = (object?)filter.From ?? DBNull.Value;
         cmd.Parameters.Add("@to", SqlDbType.DateTime2).Value = (object?)filter.To ?? DBNull.Value;
