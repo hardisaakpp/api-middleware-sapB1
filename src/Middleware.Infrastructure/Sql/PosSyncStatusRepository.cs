@@ -181,7 +181,7 @@ internal sealed class PosSyncStatusRepository : IPosSyncStatusRepository
         reader.IsDBNull(8) ? [] : ParseWarehouses(reader.GetString(8)));
 
     /// <summary>La columna la escribe este mismo repositorio; si alguien la dejó ilegible, la fila sigue sirviendo sin almacenes.</summary>
-    private static IReadOnlyList<PosSyncWarehouse> ParseWarehouses(string json)
+    private static List<PosSyncWarehouse> ParseWarehouses(string json)
     {
         try
         {
