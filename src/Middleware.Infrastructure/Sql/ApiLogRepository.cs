@@ -130,8 +130,8 @@ internal sealed class ApiLogRepository : IApiLogRepository
             return null;
         }
 
-        var request = reader.IsDBNull(0) ? null : reader.GetString(0);
-        var response = reader.IsDBNull(1) ? null : reader.GetString(1);
+        var request = await reader.IsDBNullAsync(0, ct) ? null : reader.GetString(0);
+        var response = await reader.IsDBNullAsync(1, ct) ? null : reader.GetString(1);
         return ApiLogDocumentTraceParser.Parse(docType, request, response);
     }
 

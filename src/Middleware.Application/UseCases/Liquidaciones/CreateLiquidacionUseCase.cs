@@ -26,6 +26,6 @@ public sealed class CreateLiquidacionUseCase : IUseCase<CreateLiquidacionRequest
 
         _logger.LogInformation("Liquidacion created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
 
-        return new LiquidacionResponse(result.DocEntry, result.DocNum);
+        return new LiquidacionResponse(result.DocEntry, result.DocNum, result.Recovered);
     }
 }

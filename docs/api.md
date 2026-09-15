@@ -336,13 +336,53 @@ existente en SAP).
 | `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
 | `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
 | `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+| `u_sap_id` | string | — | Opcional, máx. **60** caracteres (tamaño del UDF `U_sap_id`, alfanumérico 60). Clave de idempotencia; se escribe en el UDF del StockTransfer (ver abajo) |
+
+**Idempotencia (clave `U_sap_id`)** — desde 11/09/2026. Cada transferencia lleva una clave de
+idempotencia que el middleware resuelve en este orden: `u_sap_id` del cuerpo → cabecera HTTP
+`Idempotency-Key` (la que ya envía api-recepcion-mercaderia: `reception-transfer-{id}`) → un GUID
+generado por el middleware. La clave queda dentro del payload encolado, así que todos los
+reintentos del job usan la misma. Con ella el gateway:
+
+1. **Antes de cada POST** busca en SAP `StockTransfers?$filter=U_sap_id eq '{clave}'`. Si ya
+   existe, devuelve ese `docEntry`/`docNum` sin crear otro documento.
+2. **Si el POST falla sin resultado concluyente** — timeout de 30 s, corte de conexión, o SAP
+   rechaza el reintento (p. ej. `400 Quantity cannot exceed...` porque un intento anterior ya
+   consumió el documento base) — vuelve a buscar por la clave y, si SAP sí creó el documento, lo
+   devuelve como éxito.
+
+**La clave debe ser única entre módulos.** SAP no valida unicidad del UDF y el middleware no
+autentica al llamador, así que la convención es prefijar con el módulo y la entidad:
+`{modulo}-{entidad}-{id}` (recepción usa `reception-transfer-{id}`). Como red de seguridad, antes
+de devolver un documento encontrado por clave el middleware comprueba que sea del **mismo pedido**
+(mismas bodegas origen/destino y mismo documento base, `baseEntry`). No exige las mismas líneas:
+si el usuario escaneó más entre el intento que venció y el reintento, se devuelve el documento que
+SAP ya creó, porque no admite cambios, y queda un aviso en el log. Si la clave
+ya la usa un StockTransfer de otro pedido responde `409 Conflict` (en la cola, job `ERROR` con
+`httpStatusCode` 409) y **no crea nada**: el módulo debe corregir su clave. Una clave de más de 60
+caracteres (venga en el cuerpo o en `Idempotency-Key`) responde `400` antes de llamar a SAP.
+
+La respuesta lleva `recovered`: `false` cuando el documento se creó en esta llamada, `true` cuando
+ya existía con esa clave y se devolvió el existente (mismo `201`, mismo cuerpo; el módulo no
+necesita distinguirlo, pero queda visible en el job y en `api_log`).
+
+Convención de claves por módulo, prerequisitos en SAP y plan de extensión:
+[idempotencia-documentos.md](idempotencia-documentos.md).
+
+Motivo: incidente del 10/09/2026 — SAP tardó más de 30 s en crear varias transferencias, el
+POST venció por timeout, la cola reintentó 5 veces y 5 jobs quedaron en `ERROR` ("SAP saturado")
+aunque las transferencias sí existían en SAP (sin notificación a HITELL ni confirmación en
+recepción). Un cliente que reenvíe con la misma clave recibe el documento ya creado, nunca uno
+duplicado. Los llamadores que no envíen clave siguen funcionando (el middleware genera el GUID).
 
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 42,
-  "docNum": 1001
+  "docNum": 1001,
+  "webPosSync": { "status": "Synced" },
+  "recovered": false
 }
 ```
 
@@ -416,6 +456,10 @@ Pensado para que un sistema consumidor verifique si una transferencia ya fue cre
 antes de reenviarla (por ejemplo, tras un timeout o reintento de su propio lado). Es una
 lectura síncrona y directa contra SAP — no pasa por el sistema de jobs/cola.
 
+Consulta `Sap:TestCompanyDb`, la misma compañía donde escriben `/direct` y `/based-on-document`
+(hasta 11/09/2026 consultaba `Sap:CompanyDb`, por lo que en un deploy con ambas compañías
+distintas nunca encontraba nada y la recuperación tras timeout de `/direct` no servía).
+
 **Respuesta exitosa — 200 OK**
 
 ```json
@@ -475,6 +519,7 @@ de ambos, o ninguna).
 | Campo | Tipo | Requerido | Validación |
 |---|---|---|---|
 | `docObjectCode`, `cardCode`, `taxDate`, `u_ORIGEN`, `series`, `priceList` | — | — | Opcionales, igual que en `/based-on-document` |
+| `u_sap_id` | string | — | Opcional, máx. 60, `[A-Za-z0-9._:-]`. Clave de idempotencia (UDF `U_sap_id`): se busca antes de crear y se recupera tras un fallo, igual que en `/based-on-document`; si no viene, el middleware genera un GUID. Ver [idempotencia-documentos.md](idempotencia-documentos.md) |
 | `docDate` | string | ✓ | NotEmpty, formato `yyyy-MM-dd` |
 | `fromWarehouse` / `toWarehouse` | string | ✓ | NotEmpty, max 8 chars, distintos entre sí |
 | `stockTransferLines` | array | ✓ | Al menos un elemento |
@@ -537,13 +582,23 @@ actual al armar el payload hacia SAP.
 | `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
 | `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
 | `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+| `u_sap_id` | string | — | Opcional, máx. 60, `[A-Za-z0-9._:-]`. Clave de idempotencia (UDF `U_sap_id` de OWTQ); también se acepta en la cabecera `Idempotency-Key`; si no viene, el middleware genera un GUID |
+
+**Idempotencia (desde 14/09/2026).** Con `u_sap_id` el middleware busca antes de crear
+una `InventoryTransferRequests` con esa clave, mismas bodegas y mismos artículos, la devuelve si
+existe (`recovered: true`), la recupera si el POST falla sin respuesta y responde `409` si la clave
+pertenece a otra solicitud. Si el módulo no envía clave, el middleware genera un GUID (el UDF
+`U_sap_id` existe en OWTQ, alfanumérico 60, confirmado 14/09/2026), con lo que los reintentos de la
+cola quedan protegidos; solo un reenvío del módulo con clave propia queda cubierto de extremo a
+extremo. Convención: [idempotencia-documentos.md](idempotencia-documentos.md).
 
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 43,
-  "docNum": 1002
+  "docNum": 1002,
+  "recovered": false
 }
 ```
 
@@ -761,6 +816,17 @@ Crea una recepción de mercancía de proveedor (`PurchaseDeliveryNotes`) en SAP.
 | `docDate` | DateOnly | ✓ | |
 | `lines[].unitPrice` | decimal | ✓ | ≥ 0 |
 | `lines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+| `u_sap_id` | string | — | Opcional, máx. 60, `[A-Za-z0-9._:-]`. Clave de idempotencia; también se acepta en la cabecera `Idempotency-Key` |
+
+**Idempotencia (desde 14/09/2026).** El middleware escribe la clave (`u_sap_id`, cabecera
+`Idempotency-Key`, o un GUID que genera si el módulo no envía ninguna) en el UDF `U_sap_id` de la
+entrada, **busca antes de crear** si ya existe una `PurchaseDeliveryNotes` con esa clave del mismo
+proveedor y misma(s) orden(es) de compra base, y la devuelve sin crear otra; si el POST falla por
+timeout o corte vuelve a buscarla y, si SAP la creó, la devuelve como éxito con `recovered: true`. Si
+la clave ya la usa una entrada de otro proveedor u otra orden responde `409` sin crear nada. El UDF
+`U_sap_id` (documentos de marketing, alfanumérico 60) existe en OPDN (confirmado 14/09/2026); si en
+alguna compañía faltara, SAP rechaza el UDF y el middleware crea la entrada **sin clave**
+(comportamiento anterior) registrando un error. Convención de claves: [idempotencia-documentos.md](idempotencia-documentos.md).
 
 **Respuesta exitosa — 201 Created**
 
@@ -768,7 +834,8 @@ Crea una recepción de mercancía de proveedor (`PurchaseDeliveryNotes`) en SAP.
 {
   "docEntry": 55,
   "docNum": 300,
-  "webPosSync": { "status": "Synced" }
+  "webPosSync": { "status": "Synced" },
+  "recovered": false
 }
 ```
 
@@ -810,15 +877,24 @@ Soporta dos entornos (`Production` / `Test`) y dos tipos de depósito (`MT` / `M
 |---|---|---|
 | `type` | enum | `MT`, `MP` |
 | `environment` | enum | `Production`, `Test` |
+| `u_sap_id` | string | Opcional, máx. 60, `[A-Za-z0-9._:-]`. Clave de idempotencia; también se acepta en la cabecera `Idempotency-Key` |
 
 El campo `environment` controla qué `CompanyDb` se usa (`Sap:CompanyDb` o `Sap:TestCompanyDb`).
+
+**Idempotencia (desde 14/09/2026).** Igual que en `/goods-receipts`: el middleware busca antes de
+crear una `InventoryGenEntries` con esa clave y los mismos artículos por bodega, la devuelve si existe
+(`recovered: true`), la recupera si el POST falla sin respuesta y responde `409` si la clave pertenece
+a otro depósito. Sin `u_sap_id` genera un GUID. El UDF `U_sap_id` existe en OIGN (alfanumérico 60,
+confirmado 14/09/2026); si en alguna compañía faltara, se crea sin clave y se registra un error.
+Nota: este endpoint crea la **Entrada de mercancías de Inventario** (OIGN), no el Depósito bancario.
 
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 70,
-  "docNum": 205
+  "docNum": 205,
+  "recovered": false
 }
 ```
 
@@ -847,12 +923,21 @@ Mismo cuerpo que Depósitos sin los campos `type` y `environment`.
 }
 ```
 
+**Idempotencia (desde 14/09/2026).** Campo opcional `u_sap_id` (máx. 60, `[A-Za-z0-9._:-]`, también
+aceptado en la cabecera `Idempotency-Key`; si no viene el middleware genera un GUID). Se guarda en el
+UDF `U_sap_id` de la factura (OPCH, alfanumérico 60, confirmado 14/09/2026). Antes de crear se busca
+una `PurchaseInvoices` con esa clave, mismo `CardCode` y mismas cuentas contables; si existe se
+devuelve con `recovered: true`; si el POST falla sin respuesta se vuelve a buscar; si la clave la usa
+otra liquidación responde `409`. La pista de `AccountCode` inválido (`OACT.AcctCode`) se conserva.
+Convención de claves: [idempotencia-documentos.md](idempotencia-documentos.md).
+
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 88,
-  "docNum": 412
+  "docNum": 412,
+  "recovered": false
 }
 ```
 

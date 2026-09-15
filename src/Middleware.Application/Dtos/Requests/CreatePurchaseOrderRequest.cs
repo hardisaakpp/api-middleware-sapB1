@@ -1,4 +1,5 @@
 using FluentValidation;
+using Middleware.Application.Idempotency;
 
 namespace Middleware.Application.Dtos.Requests;
 
@@ -13,7 +14,10 @@ public sealed record CreatePurchaseOrderRequest(
     DateOnly? U_FECHA,
     DateOnly? U_FE_ETG,
     string? U_LOTE,
-    IReadOnlyList<CreatePurchaseOrderLineDto> Lines
+    IReadOnlyList<CreatePurchaseOrderLineDto> Lines,
+    // Clave de idempotencia opcional (UDF U_sap_id de OPOR, 60). Si no viene, el middleware genera un
+    // GUID; ver docs/idempotencia-documentos.md.
+    string? U_sap_id = null
 );
 
 public sealed record CreatePurchaseOrderLineDto(
@@ -28,6 +32,8 @@ public sealed class CreatePurchaseOrderRequestValidator : AbstractValidator<Crea
     public CreatePurchaseOrderRequestValidator()
     {
         RuleFor(x => x.CardCode).NotEmpty().MaximumLength(15);
+        RuleFor(x => x.U_sap_id).MaximumLength(IdempotencyKey.MaxLength).Matches(IdempotencyKey.AllowedPattern)
+            .WithMessage(IdempotencyKey.FormatMessage);
         RuleFor(x => x.Lines).NotEmpty();
         RuleForEach(x => x.Lines).ChildRules(line =>
         {

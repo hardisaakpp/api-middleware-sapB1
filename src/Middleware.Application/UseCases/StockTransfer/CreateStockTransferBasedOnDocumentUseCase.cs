@@ -34,6 +34,6 @@ public sealed class CreateStockTransferBasedOnDocumentUseCase : IUseCase<CreateS
             request.StockTransferLines.Select(l => new NotifyWebPosStockTransferLine(l.ItemCode, l.Quantity)).ToList(),
             cancellationToken);
 
-        return new StockTransferResponse(result.DocEntry, result.DocNum, webPosSync);
+        return new StockTransferResponse(result.DocEntry, result.DocNum, webPosSync, result.Recovered);
     }
 }

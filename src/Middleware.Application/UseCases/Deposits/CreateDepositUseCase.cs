@@ -37,7 +37,7 @@ public sealed class CreateDepositUseCase : IUseCase<CreateDepositRequest, Deposi
 
         _logger.LogInformation("Deposit created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
 
-        return new DepositResponse(result.DocEntry, result.DocNum);
+        return new DepositResponse(result.DocEntry, result.DocNum, result.Recovered);
     }
 }
 

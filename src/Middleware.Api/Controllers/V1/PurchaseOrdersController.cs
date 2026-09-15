@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using Middleware.Api.Idempotency;
 using Microsoft.Extensions.DependencyInjection;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
@@ -59,6 +60,14 @@ public sealed class PurchaseOrdersController : ControllerBase // NOSONAR
         [FromBody] CreatePurchaseOrderRequest request,
         CancellationToken cancellationToken)
     {
+        // Clave de idempotencia (u_sap_id o Idempotency-Key, o GUID generado): el UDF U_sap_id existe en OPOR.
+        var (key, problem) = IdempotencyKeyResolver.Resolve(Request, request.U_sap_id, generateWhenMissing: true);
+        if (problem is not null)
+        {
+            return BadRequest(problem);
+        }
+
+        request = request with { U_sap_id = key };
         var payloadJson = JsonSerializer.Serialize(request);
 
         var outcome = await _jobCoordinator.ExecuteAsync(

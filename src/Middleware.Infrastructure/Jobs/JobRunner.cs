@@ -35,6 +35,7 @@ internal sealed class JobRunner
     private async Task RunRetryLoopAsync(Guid jobId, int attemptsSoFar, Func<Task<JobAttemptResult>> attempt, CancellationToken ct)
     {
         var attempts = attemptsSoFar;
+        string? lastTransientError = null;
 
         while (attempts < _settings.MaxRetryAttempts)
         {
@@ -53,6 +54,7 @@ internal sealed class JobRunner
             catch (Exception ex) when (JobExceptionClassifier.IsTransient(ex))
             {
                 attempts++;
+                lastTransientError = ex.Message;
                 var backoffSeconds = _settings.RetryBackoffSeconds[Math.Min(attempts - 1, _settings.RetryBackoffSeconds.Length - 1)];
                 var nextRetryAt = DateTime.Now.AddSeconds(backoffSeconds);
 
@@ -70,7 +72,15 @@ internal sealed class JobRunner
             }
         }
 
-        _logger.LogError("Job {JobId} exhausted {Max} retry attempts", jobId, _settings.MaxRetryAttempts);
-        await _repository.MarkErrorAsync(jobId, "SAP saturado: se agotaron los reintentos.", (int)HttpStatusCode.ServiceUnavailable, ct);
+        _logger.LogError("Job {JobId} exhausted {Max} retry attempts. Last error: {LastError}",
+            jobId, _settings.MaxRetryAttempts, lastTransientError);
+
+        // El motivo real importa para soporte: un timeout de SAP ("The operation didn't complete
+        // within the allowed timeout") significa que el documento PUDO haberse creado igual y hay
+        // que verificarlo en SAP, cosa que "saturado" a secas no dejaba ver.
+        var message = string.IsNullOrWhiteSpace(lastTransientError)
+            ? "SAP saturado: se agotaron los reintentos."
+            : $"SAP saturado: se agotaron los reintentos. Último error: {lastTransientError}";
+        await _repository.MarkErrorAsync(jobId, message, (int)HttpStatusCode.ServiceUnavailable, ct);
     }
 }
