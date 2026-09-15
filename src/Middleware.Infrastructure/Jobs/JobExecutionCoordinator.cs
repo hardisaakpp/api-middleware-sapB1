@@ -38,6 +38,22 @@ internal sealed class JobExecutionCoordinator : IJobExecutionCoordinator
         int successStatusCode,
         CancellationToken cancellationToken = default)
     {
+        // Si ya hay un job encolado/procesando para exactamente la misma request (mismo
+        // requestType+endpoint+payload), nos enganchamos a ese en vez de lanzar otro intento
+        // contra SAP. Sin esto, cada reintento manual del usuario (p.ej. recargando la busqueda
+        // varias veces mientras SAP esta lento/caido) dispara su propia cadena independiente de
+        // intentos contra SAP, sumando carga justo cuando SAP ya esta saturado.
+        // La deduplicación es una optimización: si la consulta a la cola falla (SQL caído o no
+        // configurado) se sigue con el intento normal contra SAP en vez de responder 500.
+        var activeJobId = await TryFindActiveJobIdAsync(requestType, endpoint, requestPayloadJson, cancellationToken);
+        if (activeJobId is not null)
+        {
+            _logger.LogInformation(
+                "Job {JobId} ya en curso para {RequestType} {Endpoint}; se reutiliza en vez de reintentar contra SAP",
+                activeJobId, requestType, endpoint);
+            return new JobQueued<TResponse>(activeJobId.Value);
+        }
+
         Task<TResponse> RunOnceAsync() => RunInFreshScopeAsync(attempt);
 
         var firstAttempt = RunOnceAsync();
@@ -73,6 +89,20 @@ internal sealed class JobExecutionCoordinator : IJobExecutionCoordinator
         }
 
         return new JobQueued<TResponse>(jobId);
+    }
+
+    private async Task<Guid?> TryFindActiveJobIdAsync(string requestType, string endpoint, string requestPayloadJson, CancellationToken ct)
+    {
+        try
+        {
+            return await _repository.FindActiveIdAsync(requestType, endpoint, requestPayloadJson, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "No se pudo consultar la cola por un job en curso para {RequestType} {Endpoint}; se continúa sin deduplicar", // NOSONAR
+                requestType, endpoint);
+            return null;
+        }
     }
 
     private async Task<TResponse> RunInFreshScopeAsync<TResponse>(Func<IServiceProvider, CancellationToken, Task<TResponse>> attempt)

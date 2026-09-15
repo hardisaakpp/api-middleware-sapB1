@@ -1,4 +1,5 @@
 using FluentValidation;
+using Middleware.Application.Idempotency;
 
 namespace Middleware.Application.Dtos.Requests;
 
@@ -6,14 +7,23 @@ public sealed record CreateGoodsReceiptRequest(
     string VendorCode,
     DateOnly DocDate,
     string? Comments,
-    IReadOnlyList<GoodsReceiptLineDto> Lines
+    IReadOnlyList<GoodsReceiptLineDto> Lines,
+    // Clave de idempotencia opcional. Solo se escribe en SAP (UDF U_sap_id de PurchaseDeliveryNotes)
+    // si el módulo la envía; sin ella el comportamiento es el de siempre. Ver docs/idempotencia-documentos.md.
+    string? U_sap_id = null
 );
 
 public sealed record GoodsReceiptLineDto(
     string ItemCode,
     decimal Quantity,
     decimal UnitPrice,
-    string WarehouseCode
+    string WarehouseCode,
+    // Opcionales — si se envían, la línea se crea como "Copy From" de esa Purchase Order
+    // (BaseType=22 en SAP) en vez de un GoodsReceipt suelto: reduce el pendiente de esa PO y
+    // la deja cerrarse sola cuando se completa. Si se omiten (null), el comportamiento es
+    // exactamente el mismo que antes de este campo (no rompe a quien ya use el endpoint).
+    int? BaseEntry = null,
+    int? BaseLine = null
 );
 
 public sealed class CreateGoodsReceiptRequestValidator : AbstractValidator<CreateGoodsReceiptRequest>
@@ -21,6 +31,8 @@ public sealed class CreateGoodsReceiptRequestValidator : AbstractValidator<Creat
     public CreateGoodsReceiptRequestValidator()
     {
         RuleFor(x => x.VendorCode).NotEmpty().MaximumLength(15);
+        RuleFor(x => x.U_sap_id).MaximumLength(IdempotencyKey.MaxLength).Matches(IdempotencyKey.AllowedPattern)
+            .WithMessage(IdempotencyKey.FormatMessage);
         RuleFor(x => x.Lines).NotEmpty();
         RuleForEach(x => x.Lines).ChildRules(line =>
         {
@@ -28,6 +40,13 @@ public sealed class CreateGoodsReceiptRequestValidator : AbstractValidator<Creat
             line.RuleFor(l => l.Quantity).GreaterThan(0);
             line.RuleFor(l => l.UnitPrice).GreaterThanOrEqualTo(0);
             line.RuleFor(l => l.WarehouseCode).NotEmpty().MaximumLength(8);
+            // Si viene uno, tiene que venir el otro — a medias no arma un BaseType válido.
+            line.RuleFor(l => l.BaseLine)
+                .NotNull().When(l => l.BaseEntry.HasValue)
+                .WithMessage("BaseLine es obligatorio cuando se especifica BaseEntry.");
+            line.RuleFor(l => l.BaseEntry)
+                .NotNull().When(l => l.BaseLine.HasValue)
+                .WithMessage("BaseEntry es obligatorio cuando se especifica BaseLine.");
         });
     }
 }

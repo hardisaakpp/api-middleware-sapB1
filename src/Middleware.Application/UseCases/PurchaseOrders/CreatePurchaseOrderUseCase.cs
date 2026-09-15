@@ -29,6 +29,6 @@ public sealed class CreatePurchaseOrderUseCase : IUseCase<CreatePurchaseOrderReq
             "PurchaseOrder created: DocEntry={DocEntry}, DocNum={DocNum}",
             result.DocEntry, result.DocNum);
 
-        return new CreatePurchaseOrderResponse(result.DocEntry, result.DocNum);
+        return new CreatePurchaseOrderResponse(result.DocEntry, result.DocNum, result.Recovered);
     }
 }

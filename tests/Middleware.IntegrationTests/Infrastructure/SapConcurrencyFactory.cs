@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Middleware.Infrastructure.Sap;
 
 namespace Middleware.IntegrationTests.Infrastructure;
@@ -59,6 +60,18 @@ internal sealed class SapConcurrencyFactory : WebApplicationFactory<Program>
             }
 
             services.AddSingleton<ISapSessionManager>(_ => new StubSessionManager());
+
+            // Remove the SAP warmup hosted service. Its background ItemGroups pre-load resolves
+            // the real SapGateway and makes extra (throttled) fake-client calls that would race
+            // with the exact request count these throttle tests assert on. Matched by name
+            // because SapSessionWarmupService is internal to Middleware.Infrastructure.
+            var warmupDescriptor = services.SingleOrDefault(
+                d => d.ServiceType == typeof(IHostedService) &&
+                     d.ImplementationType?.Name == "SapSessionWarmupService");
+            if (warmupDescriptor is not null)
+            {
+                services.Remove(warmupDescriptor);
+            }
         });
     }
 }

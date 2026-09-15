@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentValidation;
+using Middleware.Application.Idempotency;
 
 namespace Middleware.Application.Dtos.Requests;
 
@@ -23,7 +24,10 @@ public sealed record CreateLiquidacionRequest(
     string? U_SER_PE = null,
     int? U_STATUS = null,
     List<Dictionary<string, JsonElement>>? WithholdingTaxDataCollection = null,
-    IReadOnlyList<LiquidacionLineDto>? DocumentLines = null
+    IReadOnlyList<LiquidacionLineDto>? DocumentLines = null,
+    // Clave de idempotencia opcional (UDF U_sap_id de OPCH, 60). Si no viene, el middleware genera un
+    // GUID; ver docs/idempotencia-documentos.md.
+    string? U_sap_id = null
 );
 
 public sealed record LiquidacionLineDto(
@@ -45,6 +49,8 @@ public sealed class CreateLiquidacionRequestValidator : AbstractValidator<Create
     {
         RuleFor(x => x.CardCode).NotEmpty();
         RuleFor(x => x.DocumentLines).NotEmpty();
+        RuleFor(x => x.U_sap_id).MaximumLength(IdempotencyKey.MaxLength).Matches(IdempotencyKey.AllowedPattern)
+            .WithMessage(IdempotencyKey.FormatMessage);
         RuleForEach(x => x.DocumentLines).ChildRules(line =>
         {
             line.RuleFor(l => l.AccountCode).NotEmpty();

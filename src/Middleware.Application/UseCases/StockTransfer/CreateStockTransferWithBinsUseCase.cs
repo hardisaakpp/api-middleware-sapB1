@@ -8,11 +8,14 @@ namespace Middleware.Application.UseCases.StockTransfer;
 public sealed class CreateStockTransferWithBinsUseCase : IUseCase<CreateStockTransferWithBinsRequest, StockTransferResponse>
 {
     private readonly ISapGateway _gateway;
+    private readonly IWebPosStockTransferNotifier _webPosNotifier;
     private readonly ILogger<CreateStockTransferWithBinsUseCase> _logger;
 
-    public CreateStockTransferWithBinsUseCase(ISapGateway gateway, ILogger<CreateStockTransferWithBinsUseCase> logger)
+    public CreateStockTransferWithBinsUseCase(
+        ISapGateway gateway, IWebPosStockTransferNotifier webPosNotifier, ILogger<CreateStockTransferWithBinsUseCase> logger)
     {
         _gateway = gateway;
+        _webPosNotifier = webPosNotifier;
         _logger = logger;
     }
 
@@ -26,6 +29,11 @@ public sealed class CreateStockTransferWithBinsUseCase : IUseCase<CreateStockTra
 
         _logger.LogInformation("StockTransfer with bins created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
 
-        return new StockTransferResponse(result.DocEntry, result.DocNum);
+        var webPosSync = await _webPosNotifier.NotifyAsync(
+            result.DocEntry, result.DocNum, request.FromWarehouse, request.ToWarehouse,
+            request.StockTransferLines.Select(l => new NotifyWebPosStockTransferLine(l.ItemCode, l.Quantity)).ToList(),
+            cancellationToken);
+
+        return new StockTransferResponse(result.DocEntry, result.DocNum, webPosSync, result.Recovered);
     }
 }

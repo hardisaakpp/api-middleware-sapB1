@@ -17,6 +17,9 @@ public sealed record ItemResponse(
     int? GroupCode,
     string? GroupName,
     string? PreferredVendorCode,
+    decimal? Pvp,
+    string? CodeBars,
+    string? Marca,
     // Only populated by GetItemsByCodesAsync (POST /items/batch), which requests
     // ItemWarehouseInfoCollection in its $select; GetItemAsync (GET /items/{itemCode})
     // does not request it, so this stays null there. Additive field — does not change
@@ -31,6 +34,14 @@ public sealed record ItemStockResponse(
     decimal IsCommitted,
     string? UomCode,
     bool Locked
+);
+
+/// <summary>Resultado de búsqueda de ítems por ItemCode o BarCode (contains, no exacto) — para P-012 de api-cedi ("Consulta Stock").</summary>
+public sealed record ItemSearchResult(
+    string ItemCode,
+    string ItemName,
+    string? BarCode,
+    string? InventoryUoM
 );
 
 public sealed record ItemsStockBatchResponse(

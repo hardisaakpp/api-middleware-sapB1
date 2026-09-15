@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
+using Middleware.Application.Dtos.Responses;
+using Middleware.Domain.Enums;
 
 namespace Middleware.IntegrationTests.Controllers;
 
@@ -41,6 +43,23 @@ public sealed class StockTransferControllerTests : IClassFixture<WebApplicationF
                     .ReturnsAsync(new DocumentCreatedResult(46, 1005));
 
                 services.AddScoped<ISapGateway>(_ => mock.Object);
+
+                // These tests are only about the SAP-creation contract — replace the WEBPOS
+                // notifier with a fixed stub so they don't depend on WEBPOS/SQL infrastructure.
+                var notifierDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IWebPosStockTransferNotifier));
+                if (notifierDescriptor is not null)
+                {
+                    services.Remove(notifierDescriptor);
+                }
+
+                var notifierMock = new Mock<IWebPosStockTransferNotifier>();
+                notifierMock
+                    .Setup(n => n.NotifyAsync(
+                        It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>(),
+                        It.IsAny<IReadOnlyList<NotifyWebPosStockTransferLine>>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new WebPosSyncInfo(WebPosSyncStatus.Synced));
+
+                services.AddScoped<IWebPosStockTransferNotifier>(_ => notifierMock.Object);
             });
         });
     }
@@ -119,6 +138,33 @@ public sealed class StockTransferControllerTests : IClassFixture<WebApplicationF
         );
 
         var response = await client.PostAsJsonAsync("/api/v1/stock-transfers/direct", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var body = await response.Content.ReadFromJsonAsync<StockTransferResult>();
+        body!.DocEntry.Should().Be(45);
+        body.DocNum.Should().Be(1004);
+    }
+
+    [Fact]
+    public async Task Post_StockTransferDirect_WithoutOptionalCorrelationFields_Returns201()
+    {
+        // u_sap_id / u_GUIA_LAAR are optional for the HTTP consumer: a body that omits both keys
+        // entirely (not even "null") must bind and pass validation exactly like one that sends them.
+        var client = _factory.CreateClient();
+
+        const string rawJson = """
+            {
+              "docDate": "2024-06-01",
+              "fromWarehouse": "WH01",
+              "toWarehouse": "WH02",
+              "stockTransferLines": [ { "itemCode": "ITEM001", "quantity": 10, "warehouseCode": "WH02" } ]
+            }
+            """;
+
+        var response = await client.PostAsync(
+            "/api/v1/stock-transfers/direct",
+            new StringContent(rawJson, System.Text.Encoding.UTF8, "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
 

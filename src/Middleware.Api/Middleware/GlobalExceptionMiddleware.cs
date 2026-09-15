@@ -63,6 +63,8 @@ public sealed class GlobalExceptionMiddleware
             TimeoutRejectedException           => (HttpStatusCode.GatewayTimeout, "SAP response timeout"),
             OperationCanceledException         => (HttpStatusCode.ServiceUnavailable, "Request cancelled"),
             ArgumentException                  => (HttpStatusCode.BadRequest, "Invalid request"),
+            KeyNotFoundException               => (HttpStatusCode.NotFound, "Resource not found"),
+            IdempotencyKeyConflictException    => (HttpStatusCode.Conflict, "Idempotency key already used by another document"),
             SapResponseException               => (HttpStatusCode.BadGateway, "SAP returned an unexpected response"),
             SapException { StatusCode: HttpStatusCode.NotFound } => (HttpStatusCode.NotFound, "Resource not found in SAP"),
             SapException                       => (HttpStatusCode.BadGateway, "SAP service error"),

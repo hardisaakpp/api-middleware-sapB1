@@ -1,5 +1,8 @@
+using System.Globalization;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -7,7 +10,7 @@ using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
 using Middleware.Infrastructure.Configuration;
-using Middleware.Infrastructure.Jobs;
+using Middleware.Infrastructure.WebPos;
 using Polly.Timeout;
 
 namespace Middleware.Infrastructure.Sap;
@@ -18,6 +21,7 @@ internal sealed class SapGateway : ISapGateway
     private readonly ISapServiceLayerClient _client;
     private readonly SapThrottle _throttle;
     private readonly ItemGroupsCache _itemGroupsCache;
+    private readonly WarehousePosInfoCache _warehousePosInfoCache;
     private readonly SapSettings _settings;
     private readonly ILogger<SapGateway> _logger;
 
@@ -29,6 +33,7 @@ internal sealed class SapGateway : ISapGateway
 
     private const string ValueProperty = "value";
     private const string DocEntryProperty = "DocEntry";
+    private const string CardCodeProperty = "CardCode";
     private const string DocNumProperty = "DocNum";
     private const string QuantityProperty = "Quantity";
     private const string ItemCodeProperty = "ItemCode";
@@ -37,12 +42,25 @@ internal sealed class SapGateway : ISapGateway
     private const string InventoryUomProperty = "InventoryUOM";
     private const string PurchaseItemProperty = "PurchaseItem";
     private const string FrozenProperty = "Frozen";
+    private const string FromWarehouseProperty = "FromWarehouse";
+    private const string ToWarehouseProperty = "ToWarehouse";
+    private const string StockTransferLinesProperty = "StockTransferLines";
+    private const string DocDateProperty = "DocDate";
+    private const string ItemNameProperty = "ItemName";
+    private const string BarCodeProperty = "BarCode";
+    private const string ItemWarehouseInfoCollectionProperty = "ItemWarehouseInfoCollection";
+    private const string ItemDescriptionProperty = "ItemDescription";
+    private const string LineNumProperty = "LineNum";
+    private const string ValidProperty = "Valid";
+    private const string StockTransfersResource = "StockTransfers";
+    private const string PurchaseDeliveryNotesResource = "PurchaseDeliveryNotes";
 
     public SapGateway(
         ISapSessionManager sessionManager,
         ISapServiceLayerClient client,
         SapThrottle throttle,
         ItemGroupsCache itemGroupsCache,
+        WarehousePosInfoCache warehousePosInfoCache,
         IOptions<SapSettings> settings,
         ILogger<SapGateway> logger)
     {
@@ -50,6 +68,7 @@ internal sealed class SapGateway : ISapGateway
         _client = client;
         _throttle = throttle;
         _itemGroupsCache = itemGroupsCache;
+        _warehousePosInfoCache = warehousePosInfoCache;
         _settings = settings.Value;
         _logger = logger;
     }
@@ -83,7 +102,268 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
-        return await CreateStockTransferWithRecoveryAsync(payload, request.U_sap_id, ct);
+        // Incidente 10/09/2026: SAP tardó >30 s, el POST venció, la cola reintentó 5 veces y el job
+        // quedó en ERROR aunque la transferencia sí existía. Ver CreateDocumentIdempotentAsync.
+        var spec = StockTransferSpec(
+            _settings.TestCompanyDb, _settings.TestPassword, request.FromWarehouse, request.ToWarehouse,
+            request.StockTransferLines.Select(l => (l.ItemCode, l.BaseEntry)), request.U_sap_id);
+        return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
+    }
+
+    /// <summary>
+    /// Fallos de un POST de creación tras los cuales SAP pudo haber confirmado el documento igual:
+    /// timeout/cancelación o corte de conexión (la respuesta nunca llegó), o un rechazo de SAP
+    /// (p. ej. 400 "Quantity cannot exceed..." porque un intento anterior ya consumió el documento
+    /// base). Un circuito abierto o el throttle no envían nada a SAP, así que no aplican.
+    /// </summary>
+    private static bool MayHaveCreatedDocument(Exception ex) => ex switch
+    {
+        TimeoutRejectedException => true,
+        HttpRequestException => true,
+        OperationCanceledException => true,
+        SapException { StatusCode: not HttpStatusCode.Unauthorized } => true,
+        _ => false
+    };
+
+    /// <summary>
+    /// Qué buscar y cómo reconocer "nuestro" documento al aplicar idempotencia por U_sap_id.
+    /// <paramref name="CompanyDb"/> null = Sap:CompanyDb (la compañía donde escribe ese endpoint).
+    /// </summary>
+    private sealed record IdempotentCreateSpec(
+        string Resource,
+        string LookupSelect,
+        string? CompanyDb,
+        string? Password,
+        Func<JsonElement, bool> IsSameRequest);
+
+    /// <summary>
+    /// Creación idempotente por clave U_sap_id (docs/idempotencia-documentos.md):
+    ///   1. si hay clave, busca si un intento anterior ya creó el documento → lo devuelve (Recovered);
+    ///   2. POST;
+    ///   3. si el POST falla sin resultado concluyente, vuelve a buscar antes de propagar el error.
+    /// Sin clave (módulo que aún no la envía) es exactamente el POST de siempre.
+    /// </summary>
+    private async Task<DocumentCreatedResult> CreateDocumentIdempotentAsync(
+        string? uSapId, string payload, IdempotentCreateSpec spec, CancellationToken ct)
+    {
+        var hasKey = !string.IsNullOrWhiteSpace(uSapId);
+        if (hasKey)
+        {
+            var existing = await FindDocumentForKeyAsync(uSapId!, spec, ct);
+            if (existing is not null)
+            {
+                _logger.LogWarning( // NOSONAR
+                    "{Resource} con U_sap_id={USapId} ya existe en SAP (DocEntry={DocEntry}, DocNum={DocNum}); no se crea de nuevo.",
+                    spec.Resource, uSapId, existing.DocEntry, existing.DocNum);
+                return existing with { Recovered = true };
+            }
+        }
+
+        Exception inconclusive;
+        try
+        {
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, spec.Resource, payload, spec.CompanyDb, spec.Password, ct);
+            return ParseDocumentResult(json);
+        }
+        catch (SapException ex) when (hasKey && IsUnknownUdfError(ex))
+        {
+            // El UDF no existe en esa tabla/compañía. La clave nunca debe impedir crear el documento:
+            // se reintenta sin ella (comportamiento anterior) y se deja un error visible para crear el UDF.
+            _logger.LogError(ex, // NOSONAR
+                "SAP rechazó U_sap_id en {Resource} (compañía {CompanyDb}): el UDF no existe ahí. Se crea SIN clave de idempotencia. Crear el UDF sap_id (alfanumérico 60) en esa tabla.",
+                spec.Resource, spec.CompanyDb ?? "Sap:CompanyDb");
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, spec.Resource, RemoveUSapId(payload), spec.CompanyDb, spec.Password, ct);
+            return ParseDocumentResult(json);
+        }
+        catch (Exception ex) when (hasKey && MayHaveCreatedDocument(ex))
+        {
+            // El fallo no dice si SAP creó el documento. Se guarda y se resuelve fuera del catch,
+            // porque registrar y relanzar en el mismo bloque incumple la regla S2139 de Sonar.
+            inconclusive = ex;
+        }
+
+        _logger.LogWarning(inconclusive,
+            "SAP POST {Resource} falló para U_sap_id={USapId} sin resultado concluyente. Verificando si el documento se creó...",
+            spec.Resource, uSapId);
+
+        var recovered = await FindDocumentForKeyAsync(uSapId!, spec, ct);
+        if (recovered is not null)
+        {
+            _logger.LogWarning( // NOSONAR
+                "Recuperado {Resource} creado por SAP pese al error: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
+                spec.Resource, recovered.DocEntry, recovered.DocNum, uSapId);
+            return recovered with { Recovered = true };
+        }
+
+        // Relanza conservando el stack original (equivale al `throw;` que antes vivía en el catch).
+        ExceptionDispatchInfo.Capture(inconclusive).Throw();
+        throw inconclusive;
+    }
+
+    /// <summary>SAP 400 que menciona el propio campo: "Property 'U_sap_id' of 'Document' is invalid" → el UDF no existe.</summary>
+    private static bool IsUnknownUdfError(SapException ex)
+        => ex.StatusCode == HttpStatusCode.BadRequest && ex.SapError.Contains("U_sap_id", StringComparison.OrdinalIgnoreCase);
+
+    private static string RemoveUSapId(string payload)
+    {
+        var node = JsonNode.Parse(payload)?.AsObject() ?? throw new SapResponseException("Payload de creación inválido al quitar U_sap_id.");
+        node.Remove("U_sap_id");
+        return node.ToJsonString(JsonOptions);
+    }
+
+    /// <summary>
+    /// Busca el documento con esa clave y comprueba que sea del MISMO pedido. La clave la pone el
+    /// módulo llamador y SAP no valida unicidad, así que dos módulos podrían chocar: si el documento
+    /// encontrado es de otro pedido se lanza <see cref="IdempotencyKeyConflictException"/> en vez de
+    /// devolver un documento ajeno. Devuelve null si no hay ninguno o si SAP no respondió a la
+    /// consulta (la creación sigue su curso).
+    /// </summary>
+    private async Task<DocumentCreatedResult?> FindDocumentForKeyAsync(string uSapId, IdempotentCreateSpec spec, CancellationToken ct)
+    {
+        JsonDocument doc;
+        try
+        {
+            var escaped = uSapId.Replace("'", "''");
+            var resource = $"{spec.Resource}?$filter=U_sap_id eq '{escaped}'&$select={spec.LookupSelect}&$orderby=DocEntry desc&$top=1";
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, spec.CompanyDb, spec.Password, ct);
+            doc = JsonDocument.Parse(json);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, // NOSONAR
+                "No se pudo consultar SAP ({Resource}) por U_sap_id={USapId}; se continúa sin verificación previa", spec.Resource, uSapId);
+            return null;
+        }
+
+        using (doc)
+        {
+            if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var item in arr.EnumerateArray())
+            {
+                var docEntry = IntOrZero(item, DocEntryProperty);
+                if (docEntry == 0)
+                {
+                    continue;
+                }
+
+                var docNum = IntOrZero(item, DocNumProperty);
+                if (!spec.IsSameRequest(item))
+                {
+                    throw new IdempotencyKeyConflictException(uSapId, docEntry, docNum);
+                }
+
+                return new DocumentCreatedResult(docEntry, docNum);
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// StockTransfers (OWTR) e InventoryTransferRequests (OWTQ): mismo pedido = mismas bodegas
+    /// origen/destino y mismo documento base (sin base, mismos artículos).
+    /// </summary>
+    private IdempotentCreateSpec StockTransferSpec(
+        string? companyDb, string? password, string fromWarehouse, string toWarehouse,
+        IEnumerable<(string ItemCode, int? BaseEntry)> lines, string? uSapId, string resource = StockTransfersResource)
+    {
+        var requestLines = lines.ToList();
+        return new IdempotentCreateSpec(
+            resource,
+            "DocEntry,DocNum,FromWarehouse,ToWarehouse,StockTransferLines",
+            companyDb,
+            password,
+            found =>
+                string.Equals(StringOrEmpty(found, FromWarehouseProperty), fromWarehouse, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(StringOrEmpty(found, ToWarehouseProperty), toWarehouse, StringComparison.OrdinalIgnoreCase) &&
+                HasSameOrigin(found, StockTransferLinesProperty, requestLines, uSapId));
+    }
+
+    /// <summary>
+    /// Mismo origen = cada BaseEntry del request aparece en las líneas del documento encontrado (sin
+    /// documento base se compara por artículos). A propósito NO exige las mismas líneas ni
+    /// cantidades: recepción omite líneas en cero y el usuario puede haber escaneado algo más entre
+    /// el intento que venció y el reintento; el documento de SAP ya existe y no admite cambios, así
+    /// que devolverlo es lo correcto (se deja constancia en el log).
+    /// </summary>
+    private bool HasSameOrigin(JsonElement found, string linesProperty, IReadOnlyList<(string ItemCode, int? BaseEntry)> requestLines, string? uSapId)
+    {
+        var foundBaseEntries = new HashSet<int>();
+        var foundItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (found.TryGetProperty(linesProperty, out var linesEl) && linesEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var line in linesEl.EnumerateArray())
+            {
+                if (NullableInt(line, "BaseEntry") is int baseEntry && baseEntry > 0)
+                {
+                    foundBaseEntries.Add(baseEntry);
+                }
+
+                foundItems.Add(StringOrEmpty(line, ItemCodeProperty).Trim());
+            }
+        }
+
+        var requestBaseEntries = requestLines.Where(l => l.BaseEntry is > 0).Select(l => l.BaseEntry!.Value).ToHashSet();
+        var sameOrigin = requestBaseEntries.Count > 0
+            ? requestBaseEntries.IsSubsetOf(foundBaseEntries)
+            : requestLines.All(l => foundItems.Contains(l.ItemCode.Trim()));
+        if (!sameOrigin)
+        {
+            return false;
+        }
+
+        var requestItems = requestLines.Select(l => l.ItemCode.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!requestItems.SetEquals(foundItems))
+        {
+            _logger.LogWarning( // NOSONAR
+                "Documento con U_sap_id={USapId} ya existe en SAP con artículos distintos al reintento (SAP: {FoundCount}, request: {RequestCount}); se devuelve el existente, SAP no permite modificarlo.",
+                uSapId, foundItems.Count, requestItems.Count);
+        }
+
+        return true;
+    }
+
+    private static int? NullableInt(JsonElement element, string property)
+        => element.TryGetProperty(property, out var p) && p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var v) ? v : null;
+
+    public async Task<DocumentCreatedResult> CreateStockTransferForCompanyAsync(CreateStockTransferBasedOnDocumentRequest request, CancellationToken ct = default)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            request.DocObjectCode,
+            request.CardCode,
+            request.DocDate, // NOSONAR
+            request.TaxDate,
+            request.Comments,
+            FromWarehouse = request.FromWarehouse, // NOSONAR
+            ToWarehouse = request.ToWarehouse, // NOSONAR
+            request.U_ORIGEN,
+            request.U_sap_id,
+            request.Series,
+            PriceList = request.PriceList ?? -2,
+            StockTransferLines = request.StockTransferLines.Select(l => new
+            {
+                l.BaseType,
+                l.BaseEntry,
+                l.BaseLine,
+                l.ItemCode,
+                l.Quantity,
+                l.WarehouseCode
+            })
+        }, JsonOptions);
+
+        // Sin companyDb/password: usa Sap:CompanyDb / Sap:Password (la compañía real), NO
+        // Sap:TestCompanyDb — a diferencia de CreateStockTransferBasedOnDocumentAsync de
+        // arriba (ese es del sandbox de WebPOS). Idempotencia solo si el módulo envía u_sap_id
+        // (el controller no genera clave aquí: el UDF debe existir en esa compañía).
+        var spec = StockTransferSpec(
+            companyDb: null, password: null, request.FromWarehouse, request.ToWarehouse,
+            request.StockTransferLines.Select(l => (l.ItemCode, l.BaseEntry)), request.U_sap_id);
+        return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
     }
 
     public async Task<DocumentCreatedResult> CreateStockTransferDirectAsync(CreateStockTransferDirectRequest request, CancellationToken ct = default)
@@ -113,7 +393,33 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
-        return await CreateStockTransferWithRecoveryAsync(payload, request.U_sap_id, ct);
+        try
+        {
+            var json = await ExecuteWithRetryOn401Async(
+                HttpMethod.Post, StockTransfersResource, payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
+            return ParseDocumentResult(json);
+        }
+        // /direct no valida "mismo pedido" (a diferencia de StockTransferSpec): dos transferencias
+        // distintas pueden compartir origen-destino con listas de ítems diferentes, y cada una ya
+        // llega con su propia clave (GUID) — no hay riesgo de colisión entre pedidos. Por eso basta
+        // reconocer "SAP pudo haber creado el documento pese al error" con el mismo criterio que usa
+        // CreateDocumentIdempotentAsync (MayHaveCreatedDocument), sin necesitar todo ese mecanismo.
+        catch (Exception ex) when (!string.IsNullOrEmpty(request.U_sap_id) && MayHaveCreatedDocument(ex))
+        {
+            _logger.LogWarning(ex, // NOSONAR
+                "SAP POST StockTransfers failed transiently for U_sap_id={USapId}. Checking for orphaned transfer...",
+                request.U_sap_id);
+
+            var recovered = await FindStockTransferByCorrelationIdAsync(request.U_sap_id, ct);
+            if (recovered is not null)
+            {
+                _logger.LogWarning( // NOSONAR
+                    "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
+                    recovered.DocEntry, recovered.DocNum, request.U_sap_id);
+                return recovered with { Recovered = true };
+            }
+            throw;
+        }
     }
 
     private async Task<DocumentCreatedResult?> FindStockTransferByCorrelationIdAsync(string uSapId, CancellationToken ct)
@@ -134,10 +440,17 @@ internal sealed class SapGateway : ISapGateway
 
     public async Task<DocumentCreatedResult?> GetStockTransferByCorrelationIdAsync(string uSapId, CancellationToken ct = default)
     {
+        // Los StockTransfers con U_sap_id los crean /direct y /based-on-document, y ambos escriben
+        // en Sap:TestCompanyDb — la búsqueda tiene que ir a esa misma compañía. Antes consultaba
+        // Sap:CompanyDb, así que en un deploy donde ambas difieren nunca encontraba nada y la
+        // recuperación tras timeout de /direct no servía.
+        EnsureTestCredentialsConfigured();
+
         var escaped = uSapId.Replace("'", "''");
         var resource = $"StockTransfers?$filter=U_sap_id eq '{escaped}'&$select=DocEntry,DocNum&$orderby=DocEntry desc&$top=1";
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+        var json = await ExecuteWithRetryOn401Async(
+            HttpMethod.Get, resource, null, _settings.TestCompanyDb, _settings.TestPassword, ct);
 
         using var doc = JsonDocument.Parse(json);
         if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
@@ -172,6 +485,7 @@ internal sealed class SapGateway : ISapGateway
             FromWarehouse = request.FromWarehouse, // NOSONAR
             ToWarehouse = request.ToWarehouse, // NOSONAR
             request.U_ORIGEN,
+            request.U_sap_id,
             request.Series,
             // PriceList -2 = "Último precio determinado" (config SAP) si el cliente no lo especifica.
             PriceList = request.PriceList ?? -2,
@@ -196,9 +510,10 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
-        var json = await ExecuteWithRetryOn401Async(
-            HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
-        return ParseDocumentResult(json);
+        var spec = StockTransferSpec(
+            _settings.TestCompanyDb, _settings.TestPassword, request.FromWarehouse, request.ToWarehouse,
+            request.StockTransferLines.Select(l => (l.ItemCode, l.BaseEntry)), request.U_sap_id);
+        return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
     }
 
     public async Task<StockTransferStatusResponse?> GetStockTransferStatusAsync(int docEntry, CancellationToken ct = default)
@@ -222,14 +537,14 @@ internal sealed class SapGateway : ISapGateway
         string GetStr(string f) => root.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
 
         return new StockTransferStatusResponse(
-            GetInt(DocEntryProperty), GetInt(DocNumProperty), GetStr("FromWarehouse"), GetStr("ToWarehouse"),
+            GetInt(DocEntryProperty), GetInt(DocNumProperty), GetStr(FromWarehouseProperty), GetStr(ToWarehouseProperty),
             ParseStockTransferLines(root));
     }
 
     private static List<StockTransferLineStatusResponse> ParseStockTransferLines(JsonElement root)
     {
         var lines = new List<StockTransferLineStatusResponse>();
-        if (!root.TryGetProperty("StockTransferLines", out var linesEl))
+        if (!root.TryGetProperty(StockTransferLinesProperty, out var linesEl))
         {
             return lines;
         }
@@ -243,7 +558,7 @@ internal sealed class SapGateway : ISapGateway
             lines.Add(new StockTransferLineStatusResponse(
                 LineInt("LineNum"),
                 LineStr("ItemCode"),
-                LineStr("ItemDescription"),                
+                LineStr(ItemDescriptionProperty),
                 LineDec(QuantityProperty),
                 LineDec("RemainingOpenQuantity")
             ));
@@ -272,20 +587,42 @@ internal sealed class SapGateway : ISapGateway
         {
             DocDate = DateTime.Now.ToString("yyyy-MM-dd"), // NOSONAR
             request.Comments,
-            FromWarehouse = request.FromWarehouse,
-            ToWarehouse = request.ToWarehouse,
-            request.U_ORIGEN,
+            // PriceList -2 = "Último precio determinado" (config SAP). El flujo Python que
+            // funcionaba lo envía, así que se replica para paridad de payload. No quitar.
+            PriceList = -2,
+            FromWarehouse = request.FromWarehouse, // NOSONAR
+            ToWarehouse = request.ToWarehouse, // NOSONAR
+            // U_ODC (UDF con el nº de OC de origen) y Series los incluye el payload del flujo
+            // Python que sí funciona. U_ODC es el candidato más probable del error 1299
+            // "no data found" de la TN custom (hace lookup contra la OC). Se omiten solos si
+            // el request no los trae (WhenWritingNull).
+            U_ODC = request.UOdc,
             Series = request.Series,
-            StockTransferLines = request.StockTransferLines.Select(l => new
+            // Tag de sistema origen (mismo UDF que el resto de los Create*Request); opcional,
+            // se omite si no viene.
+            request.U_ORIGEN,
+            // Clave de idempotencia (UDF U_sap_id de OWTQ, 60): la del módulo o el GUID del controller.
+            request.U_sap_id,
+            // ITR: la bodega va normalmente SOLO en la cabecera (FromWarehouse/ToWarehouse). El
+            // flujo Python que sí funciona manda únicamente ItemCode/Quantity por línea (sin
+            // WarehouseCode, que queda null y se omite -- WhenWritingNull); queda disponible para
+            // quien necesite un destino distinto por línea, igual que en las variantes Direct/
+            // BasedOnDocument/WithBins.
+            StockTransferLines = request.Lines.Select(l => new
             {
                 l.ItemCode,
                 l.Quantity,
+                l.ProjectCode,
                 l.WarehouseCode
             })
         }, JsonOptions);
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "InventoryTransferRequests", payload, ct);
-        return ParseDocumentResult(json);
+        // Idempotencia por U_sap_id (UDF existente en OWTQ). Una solicitud no tiene documento base:
+        // mismo pedido = mismas bodegas y mismos artículos.
+        var spec = StockTransferSpec(
+            companyDb: null, password: null, request.FromWarehouse, request.ToWarehouse,
+            request.Lines.Select(l => (l.ItemCode, (int?)null)), request.U_sap_id, resource: "InventoryTransferRequests");
+        return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
     }
 
     public async Task<DocumentCreatedResult> CreateDepositAsync(CreateDepositRequest request, string companyDb, CancellationToken ct = default)
@@ -294,6 +631,7 @@ internal sealed class SapGateway : ISapGateway
         {
             DocDate = request.DocDate.ToString("yyyy-MM-dd"),
             request.Comments,
+            request.U_sap_id,
             DocumentLines = request.Lines.Select(l => new
             {
                 l.ItemCode,
@@ -302,9 +640,19 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "InventoryGenEntries", payload, ct);
-        return ParseDocumentResult(json);
+        // Idempotencia solo si el módulo envía u_sap_id (requiere el UDF U_sap_id en documentos de
+        // marketing de esa compañía). Mismo pedido = mismos artículos por bodega.
+        var requestLines = request.Lines.Select(l => (l.ItemCode, l.WarehouseCode)).ToList();
+        var spec = new IdempotentCreateSpec(
+            "InventoryGenEntries", "DocEntry,DocNum,DocumentLines", null, null,
+            found => HasSameItemsPerWarehouse(found, requestLines));
+        return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
     }
+
+    // Object type de SAP B1 para Purchase Orders — lo que marca un GoodsReceipt como
+    // "Copy From" de una PO puntual (reduce su pendiente y la deja cerrarse sola) en vez de
+    // un documento suelto sin relación con ninguna orden de compra.
+    private const int SapPurchaseOrdersObjectType = 22;
 
     public async Task<DocumentCreatedResult> CreateGoodsReceiptAsync(CreateGoodsReceiptRequest request, CancellationToken ct = default)
     {
@@ -313,17 +661,44 @@ internal sealed class SapGateway : ISapGateway
             CardCode = request.VendorCode,
             DocDate = request.DocDate.ToString("yyyy-MM-dd"),
             request.Comments,
+            request.U_sap_id,
             DocumentLines = request.Lines.Select(l => new
             {
                 l.ItemCode,
                 l.Quantity,
                 l.UnitPrice,
-                WarehouseCode = l.WarehouseCode // NOSONAR
+                WarehouseCode = l.WarehouseCode, // NOSONAR
+                BaseType = l.BaseEntry.HasValue ? SapPurchaseOrdersObjectType : (int?)null,
+                l.BaseEntry,
+                l.BaseLine
             })
         }, JsonOptions);
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "PurchaseDeliveryNotes", payload, ct);
-        return ParseDocumentResult(json);
+        // Idempotencia solo si el módulo envía u_sap_id (requiere el UDF U_sap_id en documentos de
+        // marketing). Mismo pedido = mismo proveedor y misma(s) orden(es) de compra base (o mismos
+        // artículos si la entrada no referencia órdenes).
+        var requestLines = request.Lines.Select(l => (l.ItemCode, l.BaseEntry)).ToList();
+        var spec = new IdempotentCreateSpec(
+            PurchaseDeliveryNotesResource, "DocEntry,DocNum,CardCode,DocumentLines", null, null,
+            found => string.Equals(StringOrEmpty(found, CardCodeProperty), request.VendorCode, StringComparison.OrdinalIgnoreCase)
+                     && HasSameOrigin(found, DocumentLinesProperty, requestLines, request.U_sap_id));
+        return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
+    }
+
+    /// <summary>Depósitos: mismo pedido = cada (artículo, bodega) del request está en el documento encontrado.</summary>
+    private static bool HasSameItemsPerWarehouse(JsonElement found, IReadOnlyList<(string ItemCode, string WarehouseCode)> requestLines)
+    {
+        var foundLines = new HashSet<(string, string)>();
+        if (found.TryGetProperty(DocumentLinesProperty, out var linesEl) && linesEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var line in linesEl.EnumerateArray())
+            {
+                foundLines.Add((StringOrEmpty(line, ItemCodeProperty).Trim().ToUpperInvariant(),
+                                StringOrEmpty(line, WarehouseCodeProperty).Trim().ToUpperInvariant()));
+            }
+        }
+
+        return requestLines.All(l => foundLines.Contains((l.ItemCode.Trim().ToUpperInvariant(), l.WarehouseCode.Trim().ToUpperInvariant())));
     }
 
     public async Task<DocumentCreatedResult> CreatePurchaseOrderAsync(CreatePurchaseOrderRequest request, CancellationToken ct = default)
@@ -340,6 +715,7 @@ internal sealed class SapGateway : ISapGateway
             U_FECHA = request.U_FECHA?.ToString("yyyy-MM-dd"),
             U_FE_ETG = request.U_FE_ETG?.ToString("yyyy-MM-dd"),
             U_LOTE = request.U_LOTE, // NOSONAR
+            request.U_sap_id,
             DocumentLines = request.Lines.Select(l => new
             {
                 l.ItemCode,
@@ -349,63 +725,15 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
-        try
-        {
-            var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "PurchaseOrders", payload, ct);
-            return ParseDocumentResult(json);
-        }
-        catch (TimeoutRejectedException) when (!string.IsNullOrEmpty(request.Comments))
-        {
-            _logger.LogWarning( // NOSONAR
-                "SAP POST PurchaseOrders timed out for CardCode={CardCode}, Comments='{Comments}'. Checking for orphaned order...",
-                request.CardCode, request.Comments);
-
-            var recovered = await TryRecoverOrphanedOrderAsync(request.CardCode, request.Comments, ct);
-            if (recovered is not null)
-            {
-                _logger.LogWarning( // NOSONAR
-                    "Recovered orphaned PurchaseOrder: DocEntry={DocEntry}, DocNum={DocNum}, Comments='{Comments}'",
-                    recovered.DocEntry, recovered.DocNum, request.Comments);
-                return recovered;
-            }
-
-            throw;
-        }
-    }
-
-    private async Task<DocumentCreatedResult?> TryRecoverOrphanedOrderAsync(string cardCode, string comments, CancellationToken ct)
-    {
-        try
-        {
-            var escapedComments = comments.Replace("'", "''");
-            var resource = $"PurchaseOrders?$filter=CardCode eq '{cardCode}' and Comments eq '{escapedComments}'&$select=DocEntry,DocNum&$orderby=DocEntry desc&$top=1";
-
-            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
-
-            using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
-            {
-                return null;
-            }
-
-            foreach (var item in arr.EnumerateArray())
-            {
-                if (item.TryGetProperty(DocEntryProperty, out var de) && de.TryGetInt32(out var docEntry) && // NOSONAR
-                    item.TryGetProperty(DocNumProperty, out var dn) && dn.TryGetInt32(out var docNum)) // NOSONAR
-                {
-                    return new DocumentCreatedResult(docEntry, docNum);
-                }
-            }
-
-            return null;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "Could not query SAP for orphaned order — CardCode={CardCode}, Comments='{Comments}'",
-                cardCode, comments);
-            return null;
-        }
+        // Idempotencia por U_sap_id (UDF existente en OPOR, 60). Mismo pedido = mismo proveedor y
+        // mismos artículos. Sustituye la recuperación anterior por CardCode + Comments, que no era
+        // única ni servía de verificación previa.
+        var requestLines = request.Lines.Select(l => (l.ItemCode, (int?)null)).ToList();
+        var spec = new IdempotentCreateSpec(
+            "PurchaseOrders", "DocEntry,DocNum,CardCode,DocumentLines", null, null,
+            found => string.Equals(StringOrEmpty(found, CardCodeProperty), request.CardCode, StringComparison.OrdinalIgnoreCase)
+                     && HasSameOrigin(found, DocumentLinesProperty, requestLines, request.U_sap_id));
+        return await CreateDocumentIdempotentAsync(request.U_sap_id, payload, spec, ct);
     }
 
     // Ported 1:1 from API_SLAYER's SapService.CreatePurchaseLiquidationAsync — same SAP resource
@@ -416,9 +744,9 @@ internal sealed class SapGateway : ISapGateway
 
         var payload = new Dictionary<string, object?>
         {
-            ["CardCode"] = request.CardCode,
+            [CardCodeProperty] = request.CardCode,
             ["DocType"] = NormalizeLiquidacionText(request.DocType) ?? "dDocument_Service",
-            ["DocDate"] = today,
+            [DocDateProperty] = today,
             ["DocDueDate"] = today,
             ["NumAtCard"] = string.Empty,
             ["Comments"] = NormalizeLiquidacionText(request.Comments) ?? "LIQUIDACION DE COMPRA - API",
@@ -456,7 +784,7 @@ internal sealed class SapGateway : ISapGateway
             var node = new Dictionary<string, object?>
             {
                 ["AccountCode"] = NormalizeLiquidacionAccountCode(line.AccountCode),
-                ["ItemDescription"] = line.ItemDescription,
+                [ItemDescriptionProperty] = line.ItemDescription,
                 [QuantityProperty] = line.Quantity,
                 ["UnitPrice"] = line.UnitPrice,
                 ["TaxCode"] = line.TaxCode,
@@ -478,19 +806,48 @@ internal sealed class SapGateway : ISapGateway
             return node;
         }).ToList();
 
+        if (!string.IsNullOrWhiteSpace(request.U_sap_id))
+        {
+            payload["U_sap_id"] = request.U_sap_id;
+        }
+
         var payloadJson = JsonSerializer.Serialize(payload, JsonOptions);
         _logger.LogInformation("JSON final liquidacion antes de enviar a SAP:\n{Payload}", payloadJson); // NOSONAR
 
+        // Idempotencia por U_sap_id (UDF existente en OPCH, 60). Una liquidación es un documento de
+        // servicio sin artículos: mismo pedido = mismo socio de negocios y mismas cuentas contables.
+        var requestAccounts = (request.DocumentLines ?? [])
+            .Select(l => NormalizeLiquidacionAccountCode(l.AccountCode))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var spec = new IdempotentCreateSpec(
+            "PurchaseInvoices", "DocEntry,DocNum,CardCode,DocumentLines", null, null,
+            found => string.Equals(StringOrEmpty(found, CardCodeProperty), request.CardCode, StringComparison.OrdinalIgnoreCase)
+                     && HasSameAccounts(found, requestAccounts));
+
         try
         {
-            var json = await ExecuteWithRetryOn401Async(HttpMethod.Post, "PurchaseInvoices", payloadJson, ct);
-            return ParseDocumentResult(json);
+            return await CreateDocumentIdempotentAsync(request.U_sap_id, payloadJson, spec, ct);
         }
         catch (SapException ex) when (IsLiquidacionAccountCodeError(ex.SapError))
         {
             throw new SapException(ex.StatusCode,
                 ex.SapError + " | Verifique que AccountCode corresponda al codigo interno OACT.AcctCode (ej: _SYS...).");
         }
+    }
+
+    /// <summary>Liquidaciones: cada cuenta contable del request aparece en las líneas del documento encontrado.</summary>
+    private static bool HasSameAccounts(JsonElement found, HashSet<string> requestAccounts)
+    {
+        var foundAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (found.TryGetProperty(DocumentLinesProperty, out var linesEl) && linesEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var line in linesEl.EnumerateArray())
+            {
+                foundAccounts.Add(StringOrEmpty(line, "AccountCode").Trim());
+            }
+        }
+
+        return requestAccounts.IsSubsetOf(foundAccounts);
     }
 
     // "string" / "__TODAY__" / "__DOCNO__" are Swagger/legacy-client placeholder values, treated as absent.
@@ -587,27 +944,56 @@ internal sealed class SapGateway : ISapGateway
             }
             throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
         }
+        string? OptionalString(JsonElement el, string field) =>
+            el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 
         var lines = root.TryGetProperty(DocumentLinesProperty, out var linesEl)
             ? linesEl.EnumerateArray()
                 .Select((l, i) => new PurchaseOrderLineResponse(
-                    RequiredInt(l, "LineNum", $"DocumentLines[{i}]"),
+                    RequiredInt(l, LineNumProperty, $"DocumentLines[{i}]"),
                     RequiredString(l, ItemCodeProperty, $"DocumentLines[{i}]"),
                     RequiredDecimal(l, QuantityProperty, $"DocumentLines[{i}]"),
-                    RequiredDecimal(l, "OpenQuantity", $"DocumentLines[{i}]"),
+                    // El nombre real en SAP Service Layer es "RemainingOpenQuantity" —
+                    // "OpenQuantity" no existe en este esquema y hacía fallar cualquier
+                    // PurchaseOrder con líneas reales (ver hallazgo de api-cedi, mismo bug).
+                    RequiredDecimal(l, "RemainingOpenQuantity", $"DocumentLines[{i}]"),
                     RequiredDecimal(l, "UnitPrice", $"DocumentLines[{i}]"),
-                    RequiredString(l, WarehouseCodeProperty, $"DocumentLines[{i}]")
+                    RequiredString(l, WarehouseCodeProperty, $"DocumentLines[{i}]"),
+                    ItemDescription: OptionalString(l, ItemDescriptionProperty)
                 )).ToList()
             : (IReadOnlyList<PurchaseOrderLineResponse>)[];
 
         return new PurchaseOrderResponse(
             RequiredInt(root, DocEntryProperty, "root"),
             RequiredInt(root, DocNumProperty, "root"),
-            RequiredString(root, "CardCode", "root"),
-            RequiredString(root, "DocDate", "root"),
+            RequiredString(root, CardCodeProperty, "root"),
+            RequiredString(root, DocDateProperty, "root"),
             RequiredString(root, "DocumentStatus", "root"),
-            lines
+            lines,
+            CardName: OptionalString(root, "CardName"),
+            DocDueDate: OptionalString(root, "DocDueDate")
         );
+    }
+
+    public async Task<int?> GetPurchaseOrderDocEntryByDocNumAsync(int docNum, CancellationToken ct = default)
+    {
+        var resource = $"PurchaseOrders?$filter=DocNum eq {docNum}&$select=DocEntry&$orderby=DocEntry desc&$top=1";
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
+        {
+            return null;
+        }
+
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.TryGetProperty(DocEntryProperty, out var de) && de.TryGetInt32(out var docEntry))
+            {
+                return docEntry;
+            }
+        }
+
+        return null;
     }
 
     public async Task<PurchaseOrdersListResponse> GetPurchaseOrdersAsync(GetPurchaseOrdersRequest request, CancellationToken ct = default)
@@ -639,7 +1025,25 @@ internal sealed class SapGateway : ISapGateway
 
         try
         {
-            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"PurchaseOrders({docEntry})", payload, ct);
+            await ExecuteWithRetryOn401Async(HttpMethod.Patch, $"PurchaseOrders({docEntry})", payload, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP PurchaseOrder DocEntry={DocEntry} not found (SAP 404)", docEntry); // NOSONAR
+            throw;
+        }
+    }
+
+    public async Task UpdatePurchaseOrderStatusAsync(int docEntry, string status, CancellationToken ct = default)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            U_STATUS = status // NOSONAR
+        }, JsonOptions);
+
+        try
+        {
+            await ExecuteWithRetryOn401Async(HttpMethod.Patch, $"PurchaseOrders({docEntry})", payload, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -661,7 +1065,7 @@ internal sealed class SapGateway : ISapGateway
 
         try
         {
-            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"Items('{encoded}')", payload, ct);
+            await ExecuteWithRetryOn401Async(HttpMethod.Patch, $"Items('{encoded}')", payload, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -703,7 +1107,7 @@ internal sealed class SapGateway : ISapGateway
         }
         if (itemName is not null)
         {
-            payload["ItemName"] = itemName;
+            payload[ItemNameProperty] = itemName;
         }
         if (itemPrices is { Count: > 0 })
         {
@@ -731,7 +1135,7 @@ internal sealed class SapGateway : ISapGateway
     private static Dictionary<string, object?> ExtractItemFields(CreateItemRequest r) => new()
     {
         ["ForeignName"] = r.ForeignName,
-        ["BarCode"] = r.BarCode,
+        [BarCodeProperty] = r.BarCode,
         [InventoryUomProperty] = r.InventoryUOM,
         ["PurchaseUnit"] = r.PurchaseUnit,
         ["PurchaseItemsPerUnit"] = r.PurchaseItemsPerUnit,
@@ -756,7 +1160,7 @@ internal sealed class SapGateway : ISapGateway
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
         [FrozenProperty] = r.Frozen,
-        ["Valid"] = r.Valid,
+        [ValidProperty] = r.Valid,
         ["ValidFrom"] = r.ValidFrom,
         ["ValidTo"] = r.ValidTo,
         ["FrozenFrom"] = r.FrozenFrom,
@@ -801,7 +1205,7 @@ internal sealed class SapGateway : ISapGateway
     private static Dictionary<string, object?> ExtractItemFields(UpdateItemRequest r) => new()
     {
         ["ForeignName"] = r.ForeignName,
-        ["BarCode"] = r.BarCode,
+        [BarCodeProperty] = r.BarCode,
         [InventoryUomProperty] = r.InventoryUOM,
         ["PurchaseUnit"] = r.PurchaseUnit,
         ["PurchaseItemsPerUnit"] = r.PurchaseItemsPerUnit,
@@ -826,7 +1230,7 @@ internal sealed class SapGateway : ISapGateway
         ["PlanningSystem"] = r.PlanningSystem,
         ["ProcurementMethod"] = r.ProcurementMethod,
         [FrozenProperty] = r.Frozen,
-        ["Valid"] = r.Valid,
+        [ValidProperty] = r.Valid,
         ["ValidFrom"] = r.ValidFrom,
         ["ValidTo"] = r.ValidTo,
         ["FrozenFrom"] = r.FrozenFrom,
@@ -871,9 +1275,19 @@ internal sealed class SapGateway : ISapGateway
     // InventoryUoMEntry is the numeric UoM entry id (e.g. -1); the human-readable UoM code
     // used across this API's "uomCode"/InventoryUoM fields is the string field InventoryUOM
     // (e.g. "UNIDAD") — confirmed against real Service Layer data.
+    //
+    // The field is BarCodeProperty (singular), not "CodeBars" — this SAP instance rejects
+    // "CodeBars" with -1000 "Property 'CodeBars' of 'Item' is invalid" (verified live
+    // 2026-08-07; the original 2026-08-06 fix never hit real SAP, only fixtures). The
+    // external contract's JSON property stays "codeBars" (camelCase) — only the SAP
+    // query field name was wrong, not this API's own response shape.
     private const string ItemSelectFields =
         "ItemCode,ItemName,InventoryUOM,QuantityOnStock,PurchaseItem,SalesItem,InventoryItem," +
-        "Valid,Frozen,ItemType,ItemsGroupCode,Mainsupplier";
+        "Valid,Frozen,ItemType,ItemsGroupCode,Mainsupplier,BarCode";
+
+    // PriceList 1 = "Precio Minorista" en SAP (convención de negocio fija, no configurable
+    // por compañía). mba3-consultas valida el PVP del Excel contra este precio específico.
+    private const int PrecioMinoristaPriceList = 1;
 
     public async Task<ItemResponse?> GetItemAsync(string itemCode, CancellationToken ct = default)
     {
@@ -884,12 +1298,12 @@ internal sealed class SapGateway : ISapGateway
             try
             {
                 json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                    $"Items('{encoded}')?$select={ItemSelectFields},U_IXX_PACK", null, ct);
+                    $"Items('{encoded}')?$select={ItemSelectFields},U_IXX_PACK,U_MARCA", null, ct);
             }
             catch (SapException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
             {
-                // Company DBs without the U_IXX_PACK UDF reject the $select; retry without it
-                _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK for Item '{ItemCode}'. Retrying without the UDF.", itemCode);
+                // Company DBs without the U_IXX_PACK/U_MARCA UDFs reject the $select; retry without them
+                _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK/U_MARCA for Item '{ItemCode}'. Retrying without the UDFs.", itemCode);
                 json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
                     $"Items('{encoded}')?$select={ItemSelectFields}", null, ct);
             }
@@ -901,9 +1315,10 @@ internal sealed class SapGateway : ISapGateway
         }
 
         var groups = await GetItemGroupsMapAsync(ct);
+        var pvp = await GetPrecioMinoristaAsync(itemCode, ct);
 
         using var doc = JsonDocument.Parse(json);
-        return ParseItem(doc.RootElement, itemCode, groups);
+        return ParseItem(doc.RootElement, itemCode, groups, pvp);
     }
 
     public async Task<IReadOnlyList<ItemResponse>> GetItemsByCodesAsync(
@@ -922,11 +1337,11 @@ internal sealed class SapGateway : ISapGateway
         try
         {
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items?$filter={filter}&$select={ItemSelectFields},U_IXX_PACK,ItemWarehouseInfoCollection", null, ct);
+                $"Items?$filter={filter}&$select={ItemSelectFields},U_IXX_PACK,U_MARCA,ItemWarehouseInfoCollection", null, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
         {
-            _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK for items batch. Retrying without the UDF.");
+            _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK/U_MARCA for items batch. Retrying without the UDFs.");
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
                 $"Items?$filter={filter}&$select={ItemSelectFields},ItemWarehouseInfoCollection", null, ct);
         }
@@ -939,19 +1354,59 @@ internal sealed class SapGateway : ISapGateway
             return [];
         }
 
-        var items = new List<ItemResponse>();
+        var codes = new List<string>();
+        var elements = new List<JsonElement>();
         foreach (var element in arr.EnumerateArray())
         {
             if (element.TryGetProperty(ItemCodeProperty, out var ic) && ic.ValueKind == JsonValueKind.String)
             {
-                items.Add(ParseItem(element, ic.GetString()!, groups));
+                elements.Add(element);
+                codes.Add(ic.GetString()!);
             }
+        }
+
+        // ItemPrices no es una navegación expandible en este SAP (SL la rechaza con
+        // -1000 "Cannot expand invalid navigation property") — solo es accesible como
+        // sub-recurso directo por ítem (Items('CODE')/ItemPrices), sin soporte de
+        // $filter, así que no hay forma de traer el precio de varios ítems en una sola
+        // llamada. Se resuelve con una llamada concurrente por ítem; SapThrottle (el
+        // mismo semáforo que ya limita toda llamada a SAP vía ExecuteWithRetryOn401Async)
+        // acota la concurrencia real a MaxConcurrentSapCalls, sin lógica nueva aquí.
+        var precios = await Task.WhenAll(codes.Select(code => GetPrecioMinoristaAsync(code, ct)));
+
+        var items = new List<ItemResponse>(elements.Count);
+        for (var i = 0; i < elements.Count; i++)
+        {
+            items.Add(ParseItem(elements[i], codes[i], groups, precios[i]));
         }
         return items;
     }
 
+    // Precio Minorista (PriceList 1) vía el sub-recurso Items('CODE')/ItemPrices.
+    // null si el ítem no existe, no tiene esa lista de precio configurada, o la
+    // llamada falla — nunca tumba la resolución del ítem por un dato opcional.
+    private async Task<decimal?> GetPrecioMinoristaAsync(string itemCode, CancellationToken ct)
+    {
+        try
+        {
+            var encoded = Uri.EscapeDataString(itemCode);
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, $"Items('{encoded}')/ItemPrices", null, ct);
+            using var doc = JsonDocument.Parse(json);
+            return ExtractPrecioMinorista(doc.RootElement);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is SapException or JsonException)
+        {
+            _logger.LogWarning(ex, "No se pudo obtener el Precio Minorista de '{ItemCode}'; se omite (pvp=null).", itemCode); // NOSONAR
+            return null;
+        }
+    }
+
     private static ItemResponse ParseItem(
-        JsonElement root, string fallbackItemCode, IReadOnlyDictionary<int, string> groups)
+        JsonElement root, string fallbackItemCode, IReadOnlyDictionary<int, string> groups, decimal? pvp)
     {
         string? StrOpt(string field) =>
             root.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
@@ -967,27 +1422,64 @@ internal sealed class SapGateway : ISapGateway
 
         // Present only when the caller's $select included ItemWarehouseInfoCollection
         // (GetItemsByCodesAsync); absent for GetItemAsync, which leaves Warehouses null.
-        var warehouses = root.TryGetProperty("ItemWarehouseInfoCollection", out _)
+        var warehouses = root.TryGetProperty(ItemWarehouseInfoCollectionProperty, out _)
             ? ParseItemWarehouses(root)
             : null;
 
         return new ItemResponse(
             StrOpt(ItemCodeProperty) ?? fallbackItemCode,
-            StrOpt("ItemName") ?? string.Empty,
+            StrOpt(ItemNameProperty) ?? string.Empty,
             StrOpt(InventoryUomProperty),
             GetDecimalOrZero(root, "QuantityOnStock"),
             IsTyes(root, PurchaseItemProperty),
             IsTyes(root, "SalesItem"),
             IsTyes(root, "InventoryItem"),
-            IsTyes(root, "Valid"),
+            IsTyes(root, ValidProperty),
             IsTyes(root, FrozenProperty),
             StrOpt("ItemType"),
             StrOptNormalized("U_IXX_PACK"),
             groupCode,
             groupCode is int g && groups.TryGetValue(g, out var groupName) ? groupName : null,
             StrOptNormalized("Mainsupplier"),
+            pvp,
+            StrOptNormalized(BarCodeProperty),
+            StrOptNormalized("U_MARCA"),
             warehouses
         );
+    }
+
+    // Busca en la colección ItemPrices (respuesta del sub-recurso Items('CODE')/ItemPrices,
+    // ver GetPrecioMinoristaAsync) la entrada de la lista de precio "Precio Minorista"
+    // (PriceList 1) y devuelve su Price. null si el ítem no tiene esa lista de precio
+    // configurada, o si ItemPrices no vino en la respuesta.
+    private static decimal? ExtractPrecioMinorista(JsonElement root)
+    {
+        if (!root.TryGetProperty("ItemPrices", out var prices) || prices.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        foreach (var entry in prices.EnumerateArray())
+        {
+            if (entry.TryGetProperty("PriceList", out var pl) &&
+                pl.ValueKind == JsonValueKind.Number &&
+                pl.TryGetInt32(out var priceList) &&
+                priceList == PrecioMinoristaPriceList &&
+                entry.TryGetProperty("Price", out var price) &&
+                price.ValueKind == JsonValueKind.Number &&
+                price.TryGetDecimal(out var priceValue))
+            {
+                return priceValue;
+            }
+        }
+        return null;
+    }
+
+    public async Task PrewarmItemGroupsAsync(CancellationToken ct = default)
+    {
+        // GetItemGroupsMapAsync never throws (it swallows load failures and leaves the cache
+        // cold on error), so this is safe to fire at startup without guarding.
+        var groups = await GetItemGroupsMapAsync(ct);
+        _logger.LogInformation("ItemGroups cache pre-warmed with {Count} group(s)", groups.Count);
     }
 
     private async Task<IReadOnlyDictionary<int, string>> GetItemGroupsMapAsync(CancellationToken ct)
@@ -1057,7 +1549,18 @@ internal sealed class SapGateway : ISapGateway
             : null;
     }
 
-    public async Task<ItemStockResponse?> GetItemStockAsync(string itemCode, string warehouseCode, CancellationToken ct = default)
+    public Task<ItemStockResponse?> GetItemStockAsync(string itemCode, string warehouseCode, CancellationToken ct = default)
+        => GetItemStockInternalAsync(itemCode, warehouseCode, companyDb: null, password: null, ct);
+
+    /// <summary>Same data as <see cref="GetItemStockAsync"/> but against Sap:TestCompanyDb — see interface doc.</summary>
+    public Task<ItemStockResponse?> GetItemStockForTestCompanyAsync(string itemCode, string warehouseCode, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+        return GetItemStockInternalAsync(itemCode, warehouseCode, _settings.TestCompanyDb, _settings.TestPassword, ct);
+    }
+
+    private async Task<ItemStockResponse?> GetItemStockInternalAsync(
+        string itemCode, string warehouseCode, string? companyDb, string? password, CancellationToken ct)
     {
         string json;
         try
@@ -1066,7 +1569,7 @@ internal sealed class SapGateway : ISapGateway
             // Fetch the item with its per-warehouse collection and filter in-memory; // NOSONAR
             // SAP SL does not support $filter inside nested collections via OData.
             json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items('{encoded}')?$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, ct);
+                $"Items('{encoded}')?$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, companyDb, password, ct);
         }
         catch (SapException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -1077,7 +1580,7 @@ internal sealed class SapGateway : ISapGateway
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        if (!root.TryGetProperty("ItemWarehouseInfoCollection", out var collection))
+        if (!root.TryGetProperty(ItemWarehouseInfoCollectionProperty, out var collection))
         {
             return null;
         }
@@ -1108,6 +1611,498 @@ internal sealed class SapGateway : ISapGateway
         return new ItemStockResponse(itemCode, warehouseCode, 0m, 0m, uomCode, Locked: false);
     }
 
+    public async Task<IReadOnlyList<ItemSearchResult>> SearchItemsAsync(string query, int top, CancellationToken ct = default)
+    {
+        var escaped = query.Replace("'", "''");
+        var resource = $"Items?$filter=contains(ItemCode,'{escaped}') or contains(BarCode,'{escaped}')" +
+                       $"&$select=ItemCode,ItemName,BarCode,InventoryUOM&$top={top}";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        if (!root.TryGetProperty(ValueProperty, out var arr))
+        {
+            return [];
+        }
+
+        var results = new List<ItemSearchResult>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (!item.TryGetProperty(ItemCodeProperty, out var icEl) || icEl.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var itemName = item.TryGetProperty(ItemNameProperty, out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                ? nameEl.GetString()! : string.Empty;
+            var barCode = item.TryGetProperty(BarCodeProperty, out var bcEl) && bcEl.ValueKind == JsonValueKind.String
+                ? bcEl.GetString() : null;
+            var uom = item.TryGetProperty("InventoryUOM", out var uomEl) && uomEl.ValueKind == JsonValueKind.String
+                ? uomEl.GetString() : null;
+
+            results.Add(new ItemSearchResult(icEl.GetString()!, itemName, barCode, uom));
+        }
+
+        return results;
+    }
+
+    public async Task<IReadOnlyList<ItemStockResponse>?> GetItemStockAllWarehousesAsync(string itemCode, CancellationToken ct = default)
+    {
+        string json;
+        try
+        {
+            var encoded = Uri.EscapeDataString(itemCode);
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"Items('{encoded}')?$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP Item '{ItemCode}' not found when querying stock (all warehouses)", itemCode); // NOSONAR
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        if (!root.TryGetProperty(ItemWarehouseInfoCollectionProperty, out var collection))
+        {
+            return [];
+        }
+
+        var uomCode = root.TryGetProperty("InventoryUOM", out var uom) && uom.ValueKind == JsonValueKind.String
+            ? uom.GetString() : null;
+
+        var result = new List<ItemStockResponse>();
+        foreach (var entry in collection.EnumerateArray())
+        {
+            if (!entry.TryGetProperty(WarehouseCodeProperty, out var wc) || wc.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var inStock = GetDecimalOrZero(entry, "InStock");
+            var committed = GetDecimalOrZero(entry, "Committed");
+            if (inStock == 0 && committed == 0)
+            {
+                continue; // "mostrar por ubicación" solo tiene sentido donde hay algo
+            }
+
+            result.Add(new ItemStockResponse(itemCode, wc.GetString()!, inStock, committed, uomCode, IsTyes(entry, "Locked")));
+        }
+
+        return result;
+    }
+
+    public async Task<IReadOnlyDictionary<string, WarehousePosInfo>> GetWarehousesPosInfoForTestCompanyAsync(
+        IReadOnlyList<string> warehouseCodes, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+
+        if (warehouseCodes.Count == 0)
+        {
+            return new Dictionary<string, WarehousePosInfo>();
+        }
+
+        var fullMap = await _warehousePosInfoCache.GetOrLoadAsync(
+            _settings.TestCompanyDb!,
+            loaderCt => LoadWarehousesPosInfoAsync(_settings.TestCompanyDb, _settings.TestPassword, loaderCt), ct);
+
+        return warehouseCodes
+            .Where(fullMap.ContainsKey)
+            .ToDictionary(code => code, code => fullMap[code]);
+    }
+
+    /// <summary>Same POS flags but from the default company (Sap:CompanyDb) — see interface doc.</summary>
+    public async Task<IReadOnlyDictionary<string, WarehousePosInfo>> GetWarehousesPosInfoAsync(
+        IReadOnlyList<string> warehouseCodes, CancellationToken ct = default)
+    {
+        if (warehouseCodes.Count == 0)
+        {
+            return new Dictionary<string, WarehousePosInfo>();
+        }
+
+        // Cache keyed by company DB, so the default-company map never mixes with the test-company one.
+        var fullMap = await _warehousePosInfoCache.GetOrLoadAsync(
+            _settings.CompanyDb,
+            loaderCt => LoadWarehousesPosInfoAsync(companyDb: null, password: null, loaderCt), ct);
+
+        return warehouseCodes
+            .Where(fullMap.ContainsKey)
+            .ToDictionary(code => code, code => fullMap[code]);
+    }
+
+    private async Task<IReadOnlyDictionary<string, WarehousePosInfo>> LoadWarehousesPosInfoAsync(
+        string? companyDb, string? password, CancellationToken ct)
+    {
+        var result = new Dictionary<string, WarehousePosInfo>();
+        string? resource = "Warehouses?$select=WarehouseCode,U_WEBPOS,U_NEGOCIO";
+
+        const int maxPages = 100;
+        for (var page = 0; resource is not null && page < maxPages; page++)
+        {
+            var json = await ExecuteWithRetryOn401Async(
+                HttpMethod.Get, resource, null, companyDb, password, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            CollectWarehousePosInfoPage(root, result);
+            resource = GetNextLink(root);
+        }
+
+        return result;
+    }
+
+    private static void CollectWarehousePosInfoPage(JsonElement root, Dictionary<string, WarehousePosInfo> result)
+    {
+        if (!root.TryGetProperty(ValueProperty, out var arr))
+        {
+            return;
+        }
+
+        foreach (var entry in arr.EnumerateArray())
+        {
+            var info = ParseWarehousePosInfo(entry);
+            if (info is not null)
+            {
+                result[info.WarehouseCode] = info;
+            }
+        }
+    }
+
+    private static WarehousePosInfo? ParseWarehousePosInfo(JsonElement entry)
+    {
+        var code = StringOrNull(entry, WarehouseCodeProperty);
+        if (code is null)
+        {
+            return null;
+        }
+
+        // U_WEBPOS is a plain alphanumeric UDF ('S'/other), not a SAP boolean field —
+        // it must be compared as a string, unlike IsTyes()'s tYES/tNO encoding.
+        var isPosEnabled = string.Equals(StringOrNull(entry, "U_WEBPOS"), "S", StringComparison.OrdinalIgnoreCase);
+
+        var codBusiness = StringOrNull(entry, "U_NEGOCIO");
+        if (string.IsNullOrWhiteSpace(codBusiness))
+        {
+            codBusiness = null;
+        }
+
+        return new WarehousePosInfo(code, isPosEnabled, codBusiness);
+    }
+
+    public async Task<StockTransferDocumentResponse?> GetStockTransferForTestCompanyAsync(int docEntry, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+
+        string json;
+        try
+        {
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"StockTransfers({docEntry})?$select=DocEntry,DocNum,FromWarehouse,ToWarehouse,StockTransferLines",
+                null, _settings.TestCompanyDb, _settings.TestPassword, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP StockTransfer DocEntry={DocEntry} not found (test company)", docEntry); // NOSONAR
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var fromWarehouse = StringOrEmpty(root, FromWarehouseProperty);
+        var toWarehouse = StringOrEmpty(root, ToWarehouseProperty);
+
+        return new StockTransferDocumentResponse(
+            IntOrZero(root, DocEntryProperty), IntOrZero(root, DocNumProperty),
+            fromWarehouse, toWarehouse, ParseStockTransferDocumentLines(root, toWarehouse));
+    }
+
+    // A line without its own WarehouseCode receives the document-level ToWarehouse.
+    private static List<StockTransferDocumentLine> ParseStockTransferDocumentLines(JsonElement root, string toWarehouse)
+    {
+        var lines = new List<StockTransferDocumentLine>();
+        if (!root.TryGetProperty(StockTransferLinesProperty, out var linesEl) || linesEl.ValueKind != JsonValueKind.Array)
+        {
+            return lines;
+        }
+
+        foreach (var line in linesEl.EnumerateArray())
+        {
+            var itemCode = StringOrNull(line, ItemCodeProperty);
+            if (itemCode is null)
+            {
+                continue;
+            }
+
+            var warehouseCode = StringOrNull(line, WarehouseCodeProperty) ?? toWarehouse;
+            lines.Add(new StockTransferDocumentLine(itemCode, DecimalOrZero(line, QuantityProperty), warehouseCode));
+        }
+
+        return lines;
+    }
+
+    public async Task<GoodsReceiptDocumentResponse?> GetGoodsReceiptAsync(int docEntry, CancellationToken ct = default)
+    {
+        string json;
+        try
+        {
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"PurchaseDeliveryNotes({docEntry})?$select=DocEntry,DocNum,DocumentLines",
+                null, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP PurchaseDeliveryNote DocEntry={DocEntry} not found", docEntry); // NOSONAR
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        return new GoodsReceiptDocumentResponse(
+            IntOrZero(root, DocEntryProperty), IntOrZero(root, DocNumProperty), ParseGoodsReceiptDocumentLines(root));
+    }
+
+    // Lines without ItemCode or WarehouseCode are skipped: they cannot be mapped to a WEBPOS store stock.
+    private static List<GoodsReceiptDocumentLine> ParseGoodsReceiptDocumentLines(JsonElement root)
+    {
+        var lines = new List<GoodsReceiptDocumentLine>();
+        if (!root.TryGetProperty(DocumentLinesProperty, out var linesEl) || linesEl.ValueKind != JsonValueKind.Array)
+        {
+            return lines;
+        }
+
+        foreach (var line in linesEl.EnumerateArray())
+        {
+            var itemCode = StringOrNull(line, ItemCodeProperty);
+            var warehouseCode = StringOrNull(line, WarehouseCodeProperty);
+            if (itemCode is null || warehouseCode is null)
+            {
+                continue;
+            }
+
+            lines.Add(new GoodsReceiptDocumentLine(itemCode, DecimalOrZero(line, QuantityProperty), warehouseCode));
+        }
+
+        return lines;
+    }
+
+    // SAP Service Layer no soporta filtrar PurchaseDeliveryNotes por un campo de su coleccion
+    // hija DocumentLines — probado en vivo contra el sandbox: tanto la sintaxis OData v4
+    // "DocumentLines/any(d:d/BaseEntry eq X)" como "DocumentLines/BaseEntry eq X" devuelven 400
+    // ("Invalid symbol"/"Property ... is invalid"). Se filtra por CardCode (header, si soportado)
+    // y se descartan en C# las lineas cuyo BaseEntry no coincide — mismo patron que la
+    // verificacion de "mismo pedido" de la idempotencia (HasSameOrigin). $top acotado: los
+    // Goods Receipt de una ODC se crean
+    // en una ventana de tiempo corta despues de ella, orderby desc trae los mas recientes primero.
+    public async Task<IReadOnlyList<GoodsReceiptForPurchaseOrderResponse>> GetGoodsReceiptsByBaseEntryAsync(
+        int baseEntry, string vendorCode, CancellationToken ct = default)
+    {
+        var resource = $"{PurchaseDeliveryNotesResource}?$filter=CardCode eq '{vendorCode}'" +
+            "&$select=DocEntry,DocNum,DocDate,DocumentLines&$orderby=DocEntry desc&$top=100";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
+        {
+            return [];
+        }
+
+        var result = new List<GoodsReceiptForPurchaseOrderResponse>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            var lines = ParseGoodsReceiptLinesForBaseEntry(item, baseEntry);
+            if (lines.Count == 0)
+            {
+                continue;
+            }
+
+            result.Add(new GoodsReceiptForPurchaseOrderResponse(
+                IntOrZero(item, DocEntryProperty), IntOrZero(item, DocNumProperty), StringOrEmpty(item, DocDateProperty), lines));
+        }
+
+        return result;
+    }
+
+    // Solo las lineas que efectivamente satisfacen baseEntry — un mismo Goods Receipt puede traer
+    // lineas de otras ODCs.
+    private static List<GoodsReceiptForPurchaseOrderLine> ParseGoodsReceiptLinesForBaseEntry(JsonElement root, int baseEntry)
+    {
+        var lines = new List<GoodsReceiptForPurchaseOrderLine>();
+        if (!root.TryGetProperty(DocumentLinesProperty, out var linesEl) || linesEl.ValueKind != JsonValueKind.Array)
+        {
+            return lines;
+        }
+
+        foreach (var line in linesEl.EnumerateArray())
+        {
+            if (!line.TryGetProperty("BaseEntry", out var beEl) || !beEl.TryGetInt32(out var lineBaseEntry) || lineBaseEntry != baseEntry)
+            {
+                continue;
+            }
+
+            var itemCode = StringOrNull(line, ItemCodeProperty);
+            if (itemCode is null)
+            {
+                continue;
+            }
+
+            var lineNum = line.TryGetProperty(LineNumProperty, out var lnEl) && lnEl.TryGetInt32(out var lnVal) ? lnVal : 0;
+            var baseLine = line.TryGetProperty("BaseLine", out var blEl) && blEl.TryGetInt32(out var blVal) ? blVal : 0;
+
+            lines.Add(new GoodsReceiptForPurchaseOrderLine(lineNum, itemCode, DecimalOrZero(line, QuantityProperty), lineBaseEntry, baseLine));
+        }
+
+        return lines;
+    }
+
+    /// <summary>
+    /// Master-data fields WEBPOS needs to auto-create an item/store pair the first time it sees
+    /// it ("El producto no existe."). Same source fields ProductosMabel already uses to create
+    /// articles in HITELL: price list 1, U_IXX_MARCA, the tax code's U_X4R_INTERKEY, and every
+    /// barcode on the item. Best-effort — a field SAP can't resolve comes back null rather than
+    /// failing the whole lookup, since the auto-create retry is itself best-effort.
+    /// </summary>
+    public Task<ItemPosEnrichment?> GetItemPosEnrichmentForTestCompanyAsync(string itemCode, CancellationToken ct = default)
+    {
+        EnsureTestCredentialsConfigured();
+        return GetItemPosEnrichmentInternalAsync(itemCode, _settings.TestCompanyDb, _settings.TestPassword, ct);
+    }
+
+    /// <summary>Same enrichment but from the default company (Sap:CompanyDb) — see interface doc.</summary>
+    public Task<ItemPosEnrichment?> GetItemPosEnrichmentAsync(string itemCode, CancellationToken ct = default)
+        => GetItemPosEnrichmentInternalAsync(itemCode, companyDb: null, password: null, ct);
+
+    private async Task<ItemPosEnrichment?> GetItemPosEnrichmentInternalAsync(
+        string itemCode, string? companyDb, string? password, CancellationToken ct)
+    {
+        string json;
+        try
+        {
+            var encoded = Uri.EscapeDataString(itemCode);
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"Items('{encoded}')?$select=ItemCode,ArTaxCode,U_IXX_MARCA,ItemPrices,ItemBarCodeCollection",
+                null, companyDb, password, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP Item '{ItemCode}' not found (company={CompanyDb}) when enriching for WEBPOS auto-create", itemCode, companyDb ?? _settings.CompanyDb); // NOSONAR
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var price = ExtractPriceList1(root);
+        var brand = StringOrNull(root, "U_IXX_MARCA");
+
+        string? codeTax = null;
+        var arTaxCode = StringOrNull(root, "ArTaxCode");
+        if (!string.IsNullOrWhiteSpace(arTaxCode))
+        {
+            codeTax = await TryGetTaxInterkeyAsync(arTaxCode, companyDb, password, ct);
+        }
+
+        return new ItemPosEnrichment(price, brand, codeTax, ExtractBarcodes(root));
+    }
+
+    /// <summary>Price of price list 1 as WEBPOS expects it (3 decimals, invariant culture), or null if the item has none.</summary>
+    private static string? ExtractPriceList1(JsonElement root)
+    {
+        if (!root.TryGetProperty("ItemPrices", out var prices) || prices.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var p in prices.EnumerateArray())
+        {
+            if (IsPriceList1(p) && p.TryGetProperty("Price", out var priceEl) && priceEl.TryGetDecimal(out var priceVal))
+            {
+                return Math.Round(priceVal, 3).ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        return null;
+    }
+
+    // SAP serializes PriceList either as a number or as a string depending on the SL version.
+    private static bool IsPriceList1(JsonElement priceEntry)
+    {
+        if (!priceEntry.TryGetProperty("PriceList", out var pl))
+        {
+            return false;
+        }
+
+        return pl.ValueKind switch
+        {
+            JsonValueKind.String => pl.GetString() == "1",
+            JsonValueKind.Number => pl.TryGetInt32(out var plNum) && plNum == 1,
+            _ => false
+        };
+    }
+
+    private static List<string> ExtractBarcodes(JsonElement root)
+    {
+        var barcodes = new List<string>();
+        if (!root.TryGetProperty("ItemBarCodeCollection", out var bc) || bc.ValueKind != JsonValueKind.Array)
+        {
+            return barcodes;
+        }
+
+        foreach (var entry in bc.EnumerateArray())
+        {
+            var barcode = StringOrNull(entry, "Barcode");
+            if (!string.IsNullOrWhiteSpace(barcode))
+            {
+                barcodes.Add(barcode);
+            }
+        }
+
+        return barcodes;
+    }
+
+    private static string? StringOrNull(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+
+    private static string StringOrEmpty(JsonElement element, string property) =>
+        StringOrNull(element, property) ?? string.Empty;
+
+    private static int IntOrZero(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var p) && p.TryGetInt32(out var v) ? v : 0;
+
+    private static decimal DecimalOrZero(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var p) && p.TryGetDecimal(out var v) ? v : 0m;
+
+    private async Task<string?> TryGetTaxInterkeyAsync(string taxCode, string? companyDb, string? password, CancellationToken ct)
+    {
+        try
+        {
+            var encoded = Uri.EscapeDataString(taxCode);
+            // No $select here: Service Layer answers "Property 'U_X4R_INTERKEY' of 'SalesTaxCodes' is
+            // invalid" when a UDF of this entity is projected, even though the UDF comes back fine
+            // on the full entity (confirmed live against TEST_MABEL, IVA_15 -> "3"). With the
+            // $select every lookup failed and code_tax was always null on the WEBPOS auto-create.
+            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"SalesTaxCodes('{encoded}')",
+                null, companyDb, password, ct);
+
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("U_X4R_INTERKEY", out var interkey) && interkey.ValueKind == JsonValueKind.String
+                ? interkey.GetString()
+                : null;
+        }
+        catch (SapException ex)
+        {
+            // Enrichment is best-effort — a missing/invalid tax code must not block the retry.
+            _logger.LogWarning(ex, "Could not resolve U_X4R_INTERKEY for ArTaxCode='{TaxCode}' while enriching for WEBPOS auto-create", taxCode); // NOSONAR
+            return null;
+        }
+    }
     // Usa la User Query STOCK_BODEGA (sml.svc) en vez de Items+ItemWarehouseInfoCollection:
     // esa colección no se puede filtrar por bodega en Service Layer 
     public async Task<(IReadOnlyList<ItemStockResponse> Items, IReadOnlyList<string> NotFound)> GetItemsStockBatchAsync(
@@ -1214,13 +2209,13 @@ internal sealed class SapGateway : ISapGateway
             root.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 
         return new BusinessPartnerResponse(
-            Str("CardCode"),
+            Str(CardCodeProperty),
             Str("CardName"),
             Str("CardType"),
             StrOpt("Currency"),
             StrOpt("Phone1"),
             StrOpt("EmailAddress"),
-            Valid: IsTyes(root, "Valid"),
+            Valid: IsTyes(root, ValidProperty),
             Frozen: IsTyes(root, FrozenProperty)
         );
     }
@@ -1247,9 +2242,9 @@ internal sealed class SapGateway : ISapGateway
             string GetStr(string f) => item.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
             string? GetStrOpt(string f) => item.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 
-            var lines = item.TryGetProperty("StockTransferLines", out var linesEl)
+            var lines = item.TryGetProperty(StockTransferLinesProperty, out var linesEl)
                 ? linesEl.EnumerateArray().Select((l, i) => new InventoryTransferRequestLineResponse(
-                    l.TryGetProperty("LineNum", out var ln) && ln.TryGetInt32(out var lv) ? lv : i,
+                    l.TryGetProperty(LineNumProperty, out var ln) && ln.TryGetInt32(out var lv) ? lv : i,
                     l.TryGetProperty(ItemCodeProperty, out var li) && li.ValueKind == JsonValueKind.String ? li.GetString()! : string.Empty,
                     l.TryGetProperty(QuantityProperty, out var lq) && lq.TryGetDecimal(out var lqv) ? lqv : 0m,
                     l.TryGetProperty(WarehouseCodeProperty, out var lw) && lw.ValueKind == JsonValueKind.String ? lw.GetString() : null
@@ -1260,9 +2255,9 @@ internal sealed class SapGateway : ISapGateway
                 GetInt(DocEntryProperty),
                 GetInt(DocNumProperty),
                 GetStrOpt("Comments"),
-                GetStr("FromWarehouse"),
-                GetStr("ToWarehouse"),
-                GetStr("DocDate"),
+                GetStr(FromWarehouseProperty),
+                GetStr(ToWarehouseProperty),
+                GetStr(DocDateProperty),
                 GetStr("DocumentStatus"),
                 lines
             );
@@ -1280,13 +2275,99 @@ internal sealed class SapGateway : ISapGateway
 
         try
         {
-            await ExecuteWithRetryOn401Async(new HttpMethod("PATCH"), $"InventoryTransferRequests({docEntry})", payload, ct);
+            await ExecuteWithRetryOn401Async(HttpMethod.Patch, $"InventoryTransferRequests({docEntry})", payload, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             _logger.LogWarning("SAP InventoryTransferRequest DocEntry={DocEntry} not found (SAP 404)", docEntry); // NOSONAR
             throw;
         }
+    }
+
+    public async Task<InventoryTransferRequestsRawListResponse> GetInventoryTransferRequestsAsync(
+        GetInventoryTransferRequestsRequest request, CancellationToken ct = default)
+    {
+        var resource = $"InventoryTransferRequests?$top={request.Top}&$skip={request.Skip}&$orderby=DocEntry desc";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json);
+        var items = node?[ValueProperty]?.AsArray()
+            .OfType<System.Text.Json.Nodes.JsonObject>()
+            .ToList()
+            ?? [];
+
+        return new InventoryTransferRequestsRawListResponse(items, items.Count);
+    }
+
+    public async Task<InventoryTransferRequestResponse?> GetInventoryTransferRequestAsync(int docEntry, CancellationToken ct = default)
+    {
+        string json;
+        try
+        {
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get, $"InventoryTransferRequests({docEntry})", null, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("SAP InventoryTransferRequest DocEntry={DocEntry} not found (SAP 404)", docEntry); // NOSONAR
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        int RequiredInt(JsonElement el, string field, string ctx)
+        {
+            if (el.TryGetProperty(field, out var p) && p.TryGetInt32(out var v))
+            {
+                return v;
+            }
+            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de InventoryTransferRequest DocEntry={docEntry}");
+        }
+        string RequiredString(JsonElement el, string field, string ctx)
+        {
+            if (el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String)
+            {
+                return p.GetString()!;
+            }
+            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de InventoryTransferRequest DocEntry={docEntry}");
+        }
+        decimal RequiredDecimal(JsonElement el, string field, string ctx)
+        {
+            if (el.TryGetProperty(field, out var p) && p.TryGetDecimal(out var v))
+            {
+                return v;
+            }
+            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de InventoryTransferRequest DocEntry={docEntry}");
+        }
+        string? OptString(JsonElement el, string field)
+            => el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+
+        var lines = root.TryGetProperty(StockTransferLinesProperty, out var linesEl)
+            ? linesEl.EnumerateArray()
+                .Select((l, i) => new InventoryTransferRequestLineResponse(
+                    RequiredInt(l, LineNumProperty, $"StockTransferLines[{i}]"),
+                    RequiredString(l, ItemCodeProperty, $"StockTransferLines[{i}]"),
+                    RequiredDecimal(l, QuantityProperty, $"StockTransferLines[{i}]"),
+                    RequiredString(l, WarehouseCodeProperty, $"StockTransferLines[{i}]"),
+                    // Confirmado en vivo contra TEST_MABEL: el campo real es "RemainingOpenQuantity"
+                    // (mismo nombre que en PurchaseOrders) — no "OpenQuantity".
+                    RequiredDecimal(l, "RemainingOpenQuantity", $"StockTransferLines[{i}]"),
+                    OptString(l, ItemDescriptionProperty),
+                    OptString(l, "FromWarehouseCode")
+                )).ToList()
+            : (IReadOnlyList<InventoryTransferRequestLineResponse>)[];
+
+        return new InventoryTransferRequestResponse(
+            RequiredInt(root, DocEntryProperty, "root"),
+            RequiredInt(root, DocNumProperty, "root"),
+            OptString(root, "Comments"),
+            RequiredString(root, FromWarehouseProperty, "root"),
+            RequiredString(root, ToWarehouseProperty, "root"),
+            RequiredString(root, DocDateProperty, "root"),
+            RequiredString(root, "DocumentStatus", "root"),
+            lines
+        );
     }
 
     public async Task<IReadOnlyList<SapItemValidationData>> GetItemsForValidationAsync(
@@ -1331,9 +2412,9 @@ internal sealed class SapGateway : ISapGateway
 
         return new SapItemValidationData(
             ic.GetString()!,
-            item.TryGetProperty("ItemName", out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
+            item.TryGetProperty(ItemNameProperty, out var iname) && iname.ValueKind == JsonValueKind.String ? iname.GetString()! : string.Empty,
             IsTyes(item, PurchaseItemProperty),
-            IsTyes(item, "Valid"),
+            IsTyes(item, ValidProperty),
             IsTyes(item, FrozenProperty),
             item.TryGetProperty(InventoryUomProperty, out var uom) && uom.ValueKind == JsonValueKind.String ? uom.GetString() : null,
             ParseItemWarehouses(item)
@@ -1343,7 +2424,7 @@ internal sealed class SapGateway : ISapGateway
     private static List<SapItemWarehouseData> ParseItemWarehouses(JsonElement item)
     {
         var warehouses = new List<SapItemWarehouseData>();
-        if (!item.TryGetProperty("ItemWarehouseInfoCollection", out var collection) ||
+        if (!item.TryGetProperty(ItemWarehouseInfoCollectionProperty, out var collection) ||
             collection.ValueKind != JsonValueKind.Array)
         {
             return warehouses;
@@ -1485,27 +2566,30 @@ internal sealed class SapGateway : ISapGateway
         return priceLists;
     }
 
-    public Task<bool> HasPurchaseOrderLineForItemAsync(string itemCode, CancellationToken ct = default) =>
-        HasDocumentLineForItemAsync("PurchaseOrders", DocumentLinesProperty, itemCode, ct);
-
-    public Task<bool> HasInventoryGenEntryLineForItemAsync(string itemCode, CancellationToken ct = default) =>
-        HasDocumentLineForItemAsync("InventoryGenEntries", DocumentLinesProperty, itemCode, ct);
-
-    public Task<bool> HasInventoryTransferRequestLineForItemAsync(string itemCode, CancellationToken ct = default) =>
-        // Unlike PurchaseOrders/InventoryGenEntries, InventoryTransferRequests' line collection is
-        // called StockTransferLines (see GetInventoryTransferRequestsByCommentAsync's $select above).
-        HasDocumentLineForItemAsync("InventoryTransferRequests", "StockTransferLines", itemCode, ct);
-
-    private async Task<bool> HasDocumentLineForItemAsync(
-        string entity, string linesProperty, string itemCode, CancellationToken ct)
+    public async Task<bool> HasItemMovementsAsync(string itemCode, CancellationToken ct = default)
     {
-        var escaped = itemCode.Replace("'", "''");
-        var resource = $"{entity}?$filter={linesProperty}/ItemCode eq '{escaped}'&$select=DocEntry&$top=1";
+        var resource = $"Items('{Uri.EscapeDataString(itemCode)}')?$select=" +
+            "ItemCode,QuantityOnStock,QuantityOrderedFromVendors,QuantityOrderedByCustomers";
 
-        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+        string json;
+        try
+        {
+            json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+        }
+        catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogInformation( // NOSONAR
+                "SAP Item '{ItemCode}' not found while checking movements; returning false",
+                itemCode);
+            return false;
+        }
 
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.TryGetProperty(ValueProperty, out var arr) && arr.GetArrayLength() > 0;
+        var item = JsonSerializer.Deserialize<SapItemMovementBalances>(json, JsonOptions)
+            ?? throw new SapResponseException("SAP returned an empty Item payload while checking movements");
+
+        return (item.QuantityOnStock ?? 0m) > 0m ||
+               (item.QuantityOrderedFromVendors ?? 0m) > 0m ||
+               (item.QuantityOrderedByCustomers ?? 0m) > 0m;
     }
 
     private static List<WarehouseResponse> ParseWarehouses(JsonElement arr)
@@ -1571,36 +2655,10 @@ internal sealed class SapGateway : ISapGateway
         return new DocumentCreatedResult(docEntry, docNum);
     }
 
-    // Evita crear un StockTransfer duplicado si el cliente (o la cola de reintentos) reintenta
-    // tras un error transitorio: si SAP sí llegó a crear el documento aunque la respuesta no
-    // alcanzó a llegar, lo recuperamos por U_sap_id en vez de crear uno nuevo. Se usa el mismo
-    // criterio de "transitorio" que JobExceptionClassifier, porque son justo los errores donde
-    // no se puede saber si SAP procesó el POST antes de fallar. Compartido entre los distintos
-    // POST de StockTransfers.
-    private async Task<DocumentCreatedResult> CreateStockTransferWithRecoveryAsync(
-        string payload, string? uSapId, CancellationToken ct)
-    {
-        try
-        {
-            var json = await ExecuteWithRetryOn401Async(
-                HttpMethod.Post, "StockTransfers", payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
-            return ParseDocumentResult(json);
-        }
-        catch (Exception ex) when (!string.IsNullOrEmpty(uSapId) && JobExceptionClassifier.IsTransient(ex))
-        {
-            _logger.LogWarning(ex,// NOSONAR
-                "SAP POST StockTransfers failed transiently for U_sap_id={USapId}. Checking for orphaned transfer...", uSapId);
-
-            var recovered = await FindStockTransferByCorrelationIdAsync(uSapId, ct);
-            if (recovered is not null)
-            {
-                _logger.LogWarning(// NOSONAR
-                    "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
-                    recovered.DocEntry, recovered.DocNum, uSapId);
-                return recovered;
-            }
-            throw;
-        }
-    }
-
 }
+
+file sealed record SapItemMovementBalances(
+    string? ItemCode,
+    decimal? QuantityOnStock,
+    decimal? QuantityOrderedFromVendors,
+    decimal? QuantityOrderedByCustomers);

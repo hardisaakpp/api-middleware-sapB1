@@ -60,11 +60,89 @@ Consulta el estado de un job encolado.
 
 `status` es uno de: `ENCOLADO` (esperando o reintentando), `PROCESANDO` (intentando ahora mismo), `COMPLETADO` o `ERROR`. Mientras está `ENCOLADO`/`PROCESANDO`, `result` es `null`. Si termina en `ERROR`, `error` trae el motivo y `result` es `null`.
 
+El detalle incluye además `requestType` (handler que lo procesa) y `request` (el payload que se envió
+a SAP, ya parseado), para que soporte pueda ver exactamente qué se intentó integrar.
+
 **Códigos de error**
 
 | Status | Cuándo |
 |---|---|
 | `404 Not Found` | El `jobId` no existe |
+
+### GET /jobs
+
+Listado paginado de la cola, más reciente primero, **sin** `request` ni `result` (usar
+`GET /jobs/{jobId}` para el detalle). Es la vista "Cola SAP" del módulo Integraciones de Nexus.
+
+Query params opcionales: `status` (`ENCOLADO` \| `PROCESANDO` \| `COMPLETADO` \| `ERROR`),
+`endpoint` (búsqueda por contenido, p. ej. `stock-transfers`), `from` / `to` (sobre `createdAt`,
+inclusivos), `page` (default 1) y `pageSize` (default 20, máx 200).
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "items": [
+    {
+      "jobId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "endpoint": "POST /api/v1/liquidaciones",
+      "requestType": "CreateLiquidacion",
+      "status": "ERROR",
+      "httpStatusCode": 503,
+      "request": null,
+      "result": null,
+      "error": "SAP saturado: se agotaron los reintentos.",
+      "attempts": 5,
+      "createdAt": "2026-09-07T10:15:00",
+      "updatedAt": "2026-09-07T10:23:47"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | `status` no es uno de los cuatro valores |
+
+---
+
+## Bitácora de peticiones (api_log)
+
+Cada petición al middleware (salvo `/health`, `/swagger` y las propias consultas de soporte:
+`/api-logs`, `/jobs`, `/webpos/sync-status`) queda registrada en `sc_middleware.dbo.api_log` por
+`ApiLogMiddleware`: endpoint, cuerpo enviado, respuesta (solo en errores o métodos distintos de
+GET), usuario, status HTTP y duración. Los cuerpos se truncan a 2000 caracteres. `fecha` está en
+**hora local de Ecuador (UTC-5)**, no en UTC. Índices recomendados: `sql/create_api_log_indexes.sql`.
+
+### GET /api-logs
+
+Listado paginado, más reciente primero, **sin** `request` ni `response`.
+
+Query params opcionales: `endpoint` (contiene), `usuario` (contiene), `statusCode` (exacto),
+`onlyErrors` (`true` deja solo `statusCode >= 400`), `from` / `to` (sobre `fecha`), `page`
+(default 1) y `pageSize` (default 20, máx 200).
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "items": [
+    { "id": 8812, "endpoint": "POST /api/v1/stock-transfers/direct", "fecha": "2026-09-07T10:15:00", "usuario": "system", "statusCode": 201, "duracionMs": 850, "request": null, "response": null }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+### GET /api-logs/{id}
+
+Misma forma que cada item del listado, con `request` y `response` cargados. `404` si el id no existe.
 
 ---
 
@@ -258,13 +336,53 @@ existente en SAP).
 | `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
 | `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
 | `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+| `u_sap_id` | string | — | Opcional, máx. **60** caracteres (tamaño del UDF `U_sap_id`, alfanumérico 60). Clave de idempotencia; se escribe en el UDF del StockTransfer (ver abajo) |
+
+**Idempotencia (clave `U_sap_id`)** — desde 11/09/2026. Cada transferencia lleva una clave de
+idempotencia que el middleware resuelve en este orden: `u_sap_id` del cuerpo → cabecera HTTP
+`Idempotency-Key` (la que ya envía api-recepcion-mercaderia: `reception-transfer-{id}`) → un GUID
+generado por el middleware. La clave queda dentro del payload encolado, así que todos los
+reintentos del job usan la misma. Con ella el gateway:
+
+1. **Antes de cada POST** busca en SAP `StockTransfers?$filter=U_sap_id eq '{clave}'`. Si ya
+   existe, devuelve ese `docEntry`/`docNum` sin crear otro documento.
+2. **Si el POST falla sin resultado concluyente** — timeout de 30 s, corte de conexión, o SAP
+   rechaza el reintento (p. ej. `400 Quantity cannot exceed...` porque un intento anterior ya
+   consumió el documento base) — vuelve a buscar por la clave y, si SAP sí creó el documento, lo
+   devuelve como éxito.
+
+**La clave debe ser única entre módulos.** SAP no valida unicidad del UDF y el middleware no
+autentica al llamador, así que la convención es prefijar con el módulo y la entidad:
+`{modulo}-{entidad}-{id}` (recepción usa `reception-transfer-{id}`). Como red de seguridad, antes
+de devolver un documento encontrado por clave el middleware comprueba que sea del **mismo pedido**
+(mismas bodegas origen/destino y mismo documento base, `baseEntry`). No exige las mismas líneas:
+si el usuario escaneó más entre el intento que venció y el reintento, se devuelve el documento que
+SAP ya creó, porque no admite cambios, y queda un aviso en el log. Si la clave
+ya la usa un StockTransfer de otro pedido responde `409 Conflict` (en la cola, job `ERROR` con
+`httpStatusCode` 409) y **no crea nada**: el módulo debe corregir su clave. Una clave de más de 60
+caracteres (venga en el cuerpo o en `Idempotency-Key`) responde `400` antes de llamar a SAP.
+
+La respuesta lleva `recovered`: `false` cuando el documento se creó en esta llamada, `true` cuando
+ya existía con esa clave y se devolvió el existente (mismo `201`, mismo cuerpo; el módulo no
+necesita distinguirlo, pero queda visible en el job y en `api_log`).
+
+Convención de claves por módulo, prerequisitos en SAP y plan de extensión:
+[idempotencia-documentos.md](idempotencia-documentos.md).
+
+Motivo: incidente del 10/09/2026 — SAP tardó más de 30 s en crear varias transferencias, el
+POST venció por timeout, la cola reintentó 5 veces y 5 jobs quedaron en `ERROR` ("SAP saturado")
+aunque las transferencias sí existían en SAP (sin notificación a HITELL ni confirmación en
+recepción). Un cliente que reenvíe con la misma clave recibe el documento ya creado, nunca uno
+duplicado. Los llamadores que no envíen clave siguen funcionando (el middleware genera el GUID).
 
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 42,
-  "docNum": 1001
+  "docNum": 1001,
+  "webPosSync": { "status": "Synced" },
+  "recovered": false
 }
 ```
 
@@ -338,6 +456,10 @@ Pensado para que un sistema consumidor verifique si una transferencia ya fue cre
 antes de reenviarla (por ejemplo, tras un timeout o reintento de su propio lado). Es una
 lectura síncrona y directa contra SAP — no pasa por el sistema de jobs/cola.
 
+Consulta `Sap:TestCompanyDb`, la misma compañía donde escriben `/direct` y `/based-on-document`
+(hasta 11/09/2026 consultaba `Sap:CompanyDb`, por lo que en un deploy con ambas compañías
+distintas nunca encontraba nada y la recuperación tras timeout de `/direct` no servía).
+
 **Respuesta exitosa — 200 OK**
 
 ```json
@@ -397,6 +519,7 @@ de ambos, o ninguna).
 | Campo | Tipo | Requerido | Validación |
 |---|---|---|---|
 | `docObjectCode`, `cardCode`, `taxDate`, `u_ORIGEN`, `series`, `priceList` | — | — | Opcionales, igual que en `/based-on-document` |
+| `u_sap_id` | string | — | Opcional, máx. 60, `[A-Za-z0-9._:-]`. Clave de idempotencia (UDF `U_sap_id`): se busca antes de crear y se recupera tras un fallo, igual que en `/based-on-document`; si no viene, el middleware genera un GUID. Ver [idempotencia-documentos.md](idempotencia-documentos.md) |
 | `docDate` | string | ✓ | NotEmpty, formato `yyyy-MM-dd` |
 | `fromWarehouse` / `toWarehouse` | string | ✓ | NotEmpty, max 8 chars, distintos entre sí |
 | `stockTransferLines` | array | ✓ | Al menos un elemento |
@@ -459,15 +582,207 @@ actual al armar el payload hacia SAP.
 | `stockTransferLines[].itemCode` | string | ✓ | NotEmpty, max 20 chars |
 | `stockTransferLines[].quantity` | decimal | ✓ | > 0 |
 | `stockTransferLines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+| `u_sap_id` | string | — | Opcional, máx. 60, `[A-Za-z0-9._:-]`. Clave de idempotencia (UDF `U_sap_id` de OWTQ); también se acepta en la cabecera `Idempotency-Key`; si no viene, el middleware genera un GUID |
+
+**Idempotencia (desde 14/09/2026).** Con `u_sap_id` el middleware busca antes de crear
+una `InventoryTransferRequests` con esa clave, mismas bodegas y mismos artículos, la devuelve si
+existe (`recovered: true`), la recupera si el POST falla sin respuesta y responde `409` si la clave
+pertenece a otra solicitud. Si el módulo no envía clave, el middleware genera un GUID (el UDF
+`U_sap_id` existe en OWTQ, alfanumérico 60, confirmado 14/09/2026), con lo que los reintentos de la
+cola quedan protegidos; solo un reenvío del módulo con clave propia queda cubierto de extremo a
+extremo. Convención: [idempotencia-documentos.md](idempotencia-documentos.md).
 
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 43,
-  "docNum": 1002
+  "docNum": 1002,
+  "recovered": false
 }
 ```
+
+---
+
+## Sincronización de stock con WEBPOS
+
+`POST /stock-transfers/based-on-document`, `/direct` y `/with-bins` (no `/requests`, que no mueve
+stock) y también `POST /goods-receipts` avisan a WEBPOS/HITELL del movimiento, **encadenado
+dentro del mismo POST** — el cliente sigue llamando una sola vez. Después de que SAP confirma la transferencia, el middleware:
+
+1. Resuelve si `fromWarehouse`/`toWarehouse` están habilitados para WEBPOS (UDF `U_WEBPOS` en
+   `Warehouses`) y a qué "negocio" pertenecen (UDF `U_NEGOCIO`). Si ninguno de los dos almacenes
+   está habilitado, no se llama a WEBPOS — es un resultado de negocio correcto, no un error.
+2. Si aplica, calcula el stock absoluto post-transferencia por ítem/almacén y llama a WEBPOS
+   (`POST {webpos}/external/inventory/{codBusiness}`).
+3. Si WEBPOS rechaza específicamente con `"El producto no existe."` (el ítem no está creado
+   todavía en esa tienda/negocio), el middleware **reintenta una sola vez, automáticamente**,
+   reenviando la misma llamada enriquecida con datos de SAP (`price` = lista de precios 1,
+   `brand` = `U_IXX_MARCA`, `code_tax` = `U_X4R_INTERKEY` del impuesto del ítem,
+   `cod_pos_barcode` = todos los códigos de barra del ítem) para que WEBPOS pueda auto-crear el
+   ítem en esa tienda. Si ese reintento también falla (o SAP no tiene datos para enriquecer),
+   se reporta como `Rejected` normal — los otros 3 rechazos de WEBPOS (parámetros incompletos,
+   tienda fuera del negocio, falta stock/ítem) nunca disparan este reintento, porque no son
+   arreglables reenviando más datos.
+4. Embebe el resultado en la respuesta bajo `webPosSync`:
+
+```json
+{
+  "docEntry": 45,
+  "docNum": 1004,
+  "webPosSync": { "status": "Synced" }
+}
+```
+
+`webPosSync.status` es uno de:
+
+| Status | Significado |
+|---|---|
+| `Synced` | WEBPOS aceptó la actualización de stock |
+| `SkippedNotPos` | Ninguno de los dos almacenes está habilitado para WEBPOS — no se llamó a WEBPOS |
+| `Rejected` | WEBPOS rechazó por una razón de negocio (`procesoCorrecto:false`, en cualquier HTTP status — WEBPOS usa tanto 200 como 400 para rechazos). `reason` trae el `mensaje` crudo de WEBPOS. **No se reintenta solo** — requiere corrección manual en WEBPOS y un reintento explícito (ver abajo) |
+| `Queued` | WEBPOS no respondió a tiempo o está saturado — se encoló como job independiente (mismo mecanismo de `docs/job-queue.md`, 5 intentos con backoff). `jobId` permite consultar `GET /jobs/{jobId}` |
+| `Error` | Cualquier otro fallo notificando a WEBPOS. La transferencia en SAP **ya quedó creada** — este campo nunca hace fallar el `201` de la transferencia |
+
+⚠️ Importante: un fallo o rechazo de WEBPOS **nunca** hace que la transferencia se reintente ni
+se re-cree en SAP — SAP y WEBPOS se tratan como dos pasos independientes con su propio ciclo de
+vida, encadenados solo para la respuesta del cliente.
+
+### POST /webpos/stock-transfers/{docEntry}/retry
+
+Reintenta **solo** la notificación a WEBPOS para una transferencia que ya existe en SAP —
+usar después de corregir manualmente en WEBPOS un rechazo (`Rejected`). Nunca vuelve a llamar a
+SAP para crear nada; relee la transferencia existente por `DocEntry` (líneas y almacenes) y
+recalcula el stock vigente en ese momento antes de reintentar. Repetible cuantas veces haga
+falta hasta que el documento llegue a `SYNCED` o `SKIPPED_NOT_POS`.
+
+**Respuesta — 200 OK**, mismo cuerpo `webPosSync` descrito arriba.
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `404 Not Found` | El `DocEntry` no existe en SAP |
+
+### POST /webpos/goods-receipts/{docEntry}/retry
+
+Igual que el retry de transferencias pero para una entrada de mercadería
+(`PurchaseDeliveryNotes`) que ya existe en SAP: relee la entrada por `DocEntry` (líneas con su
+bodega receptora), recalcula el stock vigente y re-ejecuta la notificación a WEBPOS. Mismo cuerpo
+de respuesta y mismos códigos de error.
+
+### Trazabilidad — tabla `pos_sync_status`
+
+Cada notificación (creación o retry, transferencia o entrada) deja su resultado en
+`sc_middleware.dbo.pos_sync_status`, clave `(doc_type, doc_entry)` con `doc_type` `ST`
+(transferencia) o `GR` (entrada de mercadería). Estados persistidos y su lectura de negocio:
+
+| status | Significado de negocio |
+|---|---|
+| `SYNCED` | **Integrado** — HITELL aceptó la actualización de stock |
+| `SKIPPED_NOT_POS` | **No corresponde integración** — ninguna bodega del documento está habilitada para WEBPOS |
+| `REJECTED` | **Rechazado** — HITELL rechazó (típicamente producto no creado/migrado); `reason` trae el mensaje. Corregir en HITELL y reintegrar con el endpoint retry hasta llegar a `SYNCED`/`SKIPPED_NOT_POS` |
+| `ERROR` | **Error de envío** — la notificación nunca llegó a HITELL (WEBPOS caído, login fallido, `WebPos:BaseUrl` mal configurada, timeout). No es un rechazo: `reason` trae el error técnico. Reintegrar con el endpoint retry cuando la causa esté resuelta |
+
+`attempts` cuenta las veces que se intentó la integración del documento; `doc_num` es el número
+visible del documento en SAP. DDL en `sql/create_pos_sync_status.sql` (ambientes nuevos),
+`sql/alter_pos_sync_status_add_doc_type.sql` (migración desde la versión sin `doc_type`) y
+`sql/alter_pos_sync_status_add_doc_num.sql` (migración desde la versión sin `doc_num`).
+
+⚠️ Verificado el 2026-09-07: en la base de producción (`sc_middleware` en 192.168.2.211) la tabla
+**no existía** — el paso a producción de HITELL no corrió el script. Hasta crearla, los estados de
+integración no se guardan y `GET /webpos/sync-status` responde 500.
+
+### GET /webpos/sync-status/{docType}/{docEntry}
+
+Estado de integración de un documento puntual, **ya interpretado** para la UI: el cliente no
+tiene que conocer los textos de HITELL. `docType`: `ST` o `GR` (case-insensitive).
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "docType": "ST",
+  "docEntry": 587065,
+  "status": "REJECTED",
+  "result": "RECHAZADO",
+  "reason": "LIMP0027 (1): No entity found for query",
+  "attempts": 1,
+  "createdAt": "2026-09-03T22:15:30",
+  "updatedAt": null,
+  "rejection": {
+    "type": "PRODUCTO_NO_EXISTE",
+    "description": "Producto no creado en HITELL: LIMP0027. Crear el producto en HITELL y reintegrar.",
+    "items": [
+      { "itemCode": "LIMP0027", "codBusiness": "1", "message": "No entity found for query", "type": "PRODUCTO_NO_EXISTE" }
+    ],
+    "retryEndpoint": "/api/v1/webpos/stock-transfers/587065/retry"
+  }
+}
+```
+
+| Campo | Significado |
+|---|---|
+| `status` | Valor persistido: `SYNCED` \| `SKIPPED_NOT_POS` \| `REJECTED` \| `ERROR` |
+| `result` | Lectura de negocio para mostrar: `INTEGRADO` \| `NO_CORRESPONDE` \| `RECHAZADO` \| `ERROR` |
+| `reason` | Texto crudo de HITELL (`ITEM (negocio): mensaje`, varios separados por ` \| `). Solo informativo |
+| `rejection` | Solo cuando `result = RECHAZADO`; `null` en los demás casos |
+| `rejection.type` | `PRODUCTO_NO_EXISTE` cuando **todos** los ítems rechazados no existen en HITELL para ese negocio (HITELL responde `El producto no existe.` o `No entity found for query`). `OTRO` para cualquier otro rechazo |
+| `rejection.description` | Texto listo para mostrar al usuario, con los ítems a crear cuando aplica |
+| `rejection.items[]` | Un elemento por (ítem, negocio) rechazado, con su mensaje y su `type` individual |
+| `rejection.retryEndpoint` | Endpoint a invocar (POST) una vez corregido en HITELL, según `docType` |
+
+Flujo esperado en la UI: mostrar `result`; si es `RECHAZADO` y `rejection.type` es
+`PRODUCTO_NO_EXISTE`, informar que el producto no está creado en HITELL; cuando lo creen,
+invocar `rejection.retryEndpoint` y volver a consultar hasta que `result` sea `INTEGRADO`.
+
+**Códigos de error**
+
+| Status | Cuándo |
+|---|---|
+| `400 Bad Request` | `docType` distinto de `ST`/`GR` |
+| `404 Not Found` | El documento no tiene registro de integración |
+
+### GET /webpos/sync-status
+
+Listado **paginado** con la misma forma que el endpoint puntual, más reciente primero (por última
+actualización). Query params opcionales: `status` (`SYNCED` \| `REJECTED` \| `SKIPPED_NOT_POS` \| `ERROR`),
+`docType` (`ST` \| `GR`), `rejectionType` (`PRODUCTO_NO_EXISTE` \| `OTRO`, implica
+`status=REJECTED`), `docNum` (número de documento SAP, lo que ve el usuario), `docEntry`,
+`from` / `to` (sobre la última actualización, inclusivos), `page` (default 1) y `pageSize`
+(default 20, máx 200).
+
+Usos típicos del cliente (Nexus, módulo Integraciones → pestaña HITELL, que por defecto pide los
+últimos 15 días):
+
+- `?status=REJECTED&from=...&to=...` — bandeja de documentos pendientes de reintegración; el botón "Reintegrar" llama a `rejection.retryEndpoint`.
+- `?rejectionType=PRODUCTO_NO_EXISTE` — qué productos hay que crear en HITELL; `rejection.items[].itemCode` da el listado. Como el tipo de rechazo se deduce del texto de HITELL, este filtro se resuelve en memoria sobre los rechazados del rango (máx. 2000).
+- `?docNum=1065` — buscar un documento por su número SAP sin conocer su tipo.
+
+**Respuesta — 200 OK**
+
+```json
+{
+  "entries": [ { "docType": "ST", "docEntry": 587065, "docNum": 1065, "status": "REJECTED", "result": "RECHAZADO", "rejection": { "type": "PRODUCTO_NO_EXISTE", "...": "..." } } ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+`docNum` se guarda desde esta versión (columna `doc_num`, ver `sql/alter_pos_sync_status_add_doc_num.sql`
+para ambientes donde la tabla ya existía). Las filas anteriores que no lo tienen se **completan
+automáticamente** al consultarlas, una sola vez y quedan persistidas: primero desde la **bitácora**
+(`api_log` guarda la respuesta del POST que creó el documento, con su `docNum`, y la petición con sus
+almacenes — sin depender de SAP) y, si allí no hay rastro, leyendo el documento en SAP. Si nada
+responde, la fila sale con `docNum: null`. El negocio WEBPOS de cada almacén sí requiere SAP; si SAP
+no responde, los almacenes no se guardan para no mostrarlos como "fuera de WEBPOS" por error.
+
+`warehouses` (columna `warehouses`, JSON; ver `sql/alter_pos_sync_status_add_warehouses.sql`) trae los
+almacenes del documento con su negocio WEBPOS (`[{ "code": "LP-CON", "codBusiness": "9" }, { "code": "LP-CD", "codBusiness": null }]`),
+y en un rechazo `rejection.description` nombra las tiendas del negocio rechazado: es donde soporte debe
+crear el producto antes de reintegrar. Filas anteriores: `[]` hasta el siguiente reintento.
 
 ---
 
@@ -501,15 +816,35 @@ Crea una recepción de mercancía de proveedor (`PurchaseDeliveryNotes`) en SAP.
 | `docDate` | DateOnly | ✓ | |
 | `lines[].unitPrice` | decimal | ✓ | ≥ 0 |
 | `lines[].warehouseCode` | string | ✓ | NotEmpty, max 8 chars |
+| `u_sap_id` | string | — | Opcional, máx. 60, `[A-Za-z0-9._:-]`. Clave de idempotencia; también se acepta en la cabecera `Idempotency-Key` |
+
+**Idempotencia (desde 14/09/2026).** El middleware escribe la clave (`u_sap_id`, cabecera
+`Idempotency-Key`, o un GUID que genera si el módulo no envía ninguna) en el UDF `U_sap_id` de la
+entrada, **busca antes de crear** si ya existe una `PurchaseDeliveryNotes` con esa clave del mismo
+proveedor y misma(s) orden(es) de compra base, y la devuelve sin crear otra; si el POST falla por
+timeout o corte vuelve a buscarla y, si SAP la creó, la devuelve como éxito con `recovered: true`. Si
+la clave ya la usa una entrada de otro proveedor u otra orden responde `409` sin crear nada. El UDF
+`U_sap_id` (documentos de marketing, alfanumérico 60) existe en OPDN (confirmado 14/09/2026); si en
+alguna compañía faltara, SAP rechaza el UDF y el middleware crea la entrada **sin clave**
+(comportamiento anterior) registrando un error. Convención de claves: [idempotencia-documentos.md](idempotencia-documentos.md).
 
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 55,
-  "docNum": 300
+  "docNum": 300,
+  "webPosSync": { "status": "Synced" },
+  "recovered": false
 }
 ```
+
+Las entradas de mercadería también sincronizan stock con WEBPOS/HITELL, encadenado dentro del
+mismo POST — igual que las transferencias de stock (ver la sección "Sincronización de stock con
+WEBPOS"). La diferencia operativa: la bodega receptora viene por línea, y las lecturas SAP del
+paso WEBPOS van contra `Sap:CompanyDb` (la compañía donde se crean las entradas), no contra
+`Sap:TestCompanyDb`. `webPosSync` usa los mismos estados de esa sección y un fallo o rechazo de
+WEBPOS **nunca** hace fallar el `201` de la entrada ya creada en SAP.
 
 ---
 
@@ -542,15 +877,24 @@ Soporta dos entornos (`Production` / `Test`) y dos tipos de depósito (`MT` / `M
 |---|---|---|
 | `type` | enum | `MT`, `MP` |
 | `environment` | enum | `Production`, `Test` |
+| `u_sap_id` | string | Opcional, máx. 60, `[A-Za-z0-9._:-]`. Clave de idempotencia; también se acepta en la cabecera `Idempotency-Key` |
 
 El campo `environment` controla qué `CompanyDb` se usa (`Sap:CompanyDb` o `Sap:TestCompanyDb`).
+
+**Idempotencia (desde 14/09/2026).** Igual que en `/goods-receipts`: el middleware busca antes de
+crear una `InventoryGenEntries` con esa clave y los mismos artículos por bodega, la devuelve si existe
+(`recovered: true`), la recupera si el POST falla sin respuesta y responde `409` si la clave pertenece
+a otro depósito. Sin `u_sap_id` genera un GUID. El UDF `U_sap_id` existe en OIGN (alfanumérico 60,
+confirmado 14/09/2026); si en alguna compañía faltara, se crea sin clave y se registra un error.
+Nota: este endpoint crea la **Entrada de mercancías de Inventario** (OIGN), no el Depósito bancario.
 
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 70,
-  "docNum": 205
+  "docNum": 205,
+  "recovered": false
 }
 ```
 
@@ -579,12 +923,21 @@ Mismo cuerpo que Depósitos sin los campos `type` y `environment`.
 }
 ```
 
+**Idempotencia (desde 14/09/2026).** Campo opcional `u_sap_id` (máx. 60, `[A-Za-z0-9._:-]`, también
+aceptado en la cabecera `Idempotency-Key`; si no viene el middleware genera un GUID). Se guarda en el
+UDF `U_sap_id` de la factura (OPCH, alfanumérico 60, confirmado 14/09/2026). Antes de crear se busca
+una `PurchaseInvoices` con esa clave, mismo `CardCode` y mismas cuentas contables; si existe se
+devuelve con `recovered: true`; si el POST falla sin respuesta se vuelve a buscar; si la clave la usa
+otra liquidación responde `409`. La pista de `AccountCode` inválido (`OACT.AcctCode`) se conserva.
+Convención de claves: [idempotencia-documentos.md](idempotencia-documentos.md).
+
 **Respuesta exitosa — 201 Created**
 
 ```json
 {
   "docEntry": 88,
-  "docNum": 412
+  "docNum": 412,
+  "recovered": false
 }
 ```
 
@@ -614,7 +967,8 @@ por SKU exacto (pack, grupo y proveedor preferido).
   "packCode": "X1",
   "groupCode": 103,
   "groupName": "R-MEDIAS",
-  "preferredVendorCode": "P1790389219001"
+  "preferredVendorCode": "P1790389219001",
+  "marca": "Roland"
 }
 ```
 
@@ -625,6 +979,7 @@ por SKU exacto (pack, grupo y proveedor preferido).
 | `groupCode` | `ItemsGroupCode` | `null` si SL no lo devuelve |
 | `groupName` | `ItemGroups.GroupName` | Resuelto vía cache en memoria del mapa código→nombre (TTL `Sap:ItemGroupsCacheMinutes`, default 360). `null` si el grupo no se puede resolver; siempre coherente con `groupCode` |
 | `preferredVendorCode` | `Mainsupplier` | `null` si el ítem no tiene proveedor preferido (`""` de SL se normaliza a `null`) |
+| `marca` | `U_MARCA` (UDF) | `null` si el ítem no lo tiene. Si la base no tiene el UDF, el middleware reintenta el `$select` sin él (junto con `packCode`) y devuelve `null` |
 
 Los campos con valor `null` se omiten del JSON (política global de la API).
 

@@ -20,12 +20,12 @@ public sealed class CreateStockTransferRequestUseCase : IUseCase<CreateStockTran
     {
         _logger.LogInformation(
             "Creating InventoryTransferRequest from {FromWarehouse} to {ToWarehouse} with {LineCount} lines",
-            request.FromWarehouse, request.ToWarehouse, request.StockTransferLines.Count);
+            request.FromWarehouse, request.ToWarehouse, request.Lines.Count);
 
         var result = await _gateway.CreateStockTransferRequestAsync(request, cancellationToken);
 
         _logger.LogInformation("StockTransferRequest created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
 
-        return new StockTransferResponse(result.DocEntry, result.DocNum);
+        return new StockTransferResponse(result.DocEntry, result.DocNum, null, result.Recovered);
     }
 }

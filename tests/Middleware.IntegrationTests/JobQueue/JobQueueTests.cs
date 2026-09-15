@@ -20,7 +20,8 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
         _baseFactory = factory;
     }
 
-    private WebApplicationFactory<Program> CreateFactory(Mock<ISapGateway> gatewayMock, InMemoryJobQueueRepository jobRepository)
+    private WebApplicationFactory<Program> CreateFactory(
+        Mock<ISapGateway> gatewayMock, InMemoryJobQueueRepository jobRepository, int maxRetryAttempts = 5)
     {
         return _baseFactory.WithWebHostBuilder(builder =>
         {
@@ -29,7 +30,8 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
                 config.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["JobQueue:QueueAfterSeconds"] = "1",
-                    ["JobQueue:RetryBackoffSeconds:0"] = "1"
+                    ["JobQueue:RetryBackoffSeconds:0"] = "1",
+                    ["JobQueue:MaxRetryAttempts"] = maxRetryAttempts.ToString()
                 });
             });
 
@@ -138,14 +140,110 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
         callCount.Should().BeGreaterThanOrEqualTo(2);
     }
 
+    [Fact]
+    public async Task TransientFailure_ExhaustsRetries_ErrorMessageTellsTheLastFailure()
+    {
+        var gatewayMock = new Mock<ISapGateway>();
+        gatewayMock
+            .Setup(g => g.UpdateInventoryTransferRequestStatusAsync(396539, "0", It.IsAny<CancellationToken>()))
+            .Returns(() => Task.FromException(new HttpRequestException("The response ended prematurely.")));
+
+        var jobRepository = new InMemoryJobQueueRepository();
+        var client = CreateFactory(gatewayMock, jobRepository, maxRetryAttempts: 1).CreateClient();
+
+        var response = await client.PatchAsync(
+            "/api/v1/inventory-transfer-requests/396539/status",
+            JsonContent.Create(new { U_STATUS = "0" }));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        using var acceptedDoc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var jobId = acceptedDoc.RootElement.GetProperty("jobId").GetGuid();
+
+        // ~15 s: the in-memory "RetryBackoffSeconds:0" override does not replace index 0 — the
+        // configuration binder APPENDS bound array elements to the property's initializer array,
+        // so the first backoff stays at the default 15 s.
+        var job = await PollUntilTerminalAsync(client, jobId, TimeSpan.FromSeconds(40));
+
+        job.GetProperty("status").GetString().Should().Be("ERROR");
+        job.GetProperty("httpStatusCode").GetInt32().Should().Be(503);
+        job.GetProperty("error").GetString().Should()
+            .StartWith("SAP saturado: se agotaron los reintentos.")
+            .And.Contain("The response ended prematurely.",
+                "support needs the real reason (timeout, connection cut) to know whether to check SAP for the document");
+    }
+
+    [Fact]
+    public async Task DuplicateRequestWhileJobInFlight_ReusesSameJob_DoesNotCallSapAgain()
+    {
+        var callCount = 0;
+        var gatewayMock = new Mock<ISapGateway>();
+        gatewayMock
+            .Setup(g => g.UpdateInventoryTransferRequestStatusAsync(396539, "1", It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                callCount++;
+                await Task.Delay(TimeSpan.FromSeconds(3));
+            });
+
+        var jobRepository = new InMemoryJobQueueRepository();
+        var client = CreateFactory(gatewayMock, jobRepository).CreateClient();
+
+        var firstRequestTask = client.PatchAsync(
+            "/api/v1/inventory-transfer-requests/396539/status",
+            JsonContent.Create(new { U_STATUS = "1" }));
+
+        // El primer intento solo se encola despues de QueueAfterSeconds (1s en esta factory);
+        // esperamos a que eso ocurra para simular un reintento manual del usuario mientras el
+        // job anterior ya esta en curso (no una carrera de milisegundos).
+        await WaitUntilAsync(() => jobRepository.Count > 0, TimeSpan.FromSeconds(5));
+
+        var secondResponse = await client.PatchAsync(
+            "/api/v1/inventory-transfer-requests/396539/status",
+            JsonContent.Create(new { U_STATUS = "1" }));
+
+        var firstResponse = await firstRequestTask;
+
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        secondResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        using var firstDoc = JsonDocument.Parse(await firstResponse.Content.ReadAsStringAsync());
+        using var secondDoc = JsonDocument.Parse(await secondResponse.Content.ReadAsStringAsync());
+
+        var firstJobId = firstDoc.RootElement.GetProperty("jobId").GetGuid();
+        var secondJobId = secondDoc.RootElement.GetProperty("jobId").GetGuid();
+
+        secondJobId.Should().Be(firstJobId, "a duplicate request for the same in-flight job must reuse it instead of starting a new SAP attempt");
+        jobRepository.Count.Should().Be(1, "only one job row should exist for the duplicate request");
+
+        await PollUntilTerminalAsync(client, firstJobId, TimeSpan.FromSeconds(10));
+
+        callCount.Should().Be(1, "the duplicate request must not trigger a second call to SAP");
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        while (!condition())
+        {
+            if (cts.IsCancellationRequested)
+            {
+                throw new TimeoutException("Condition was not met in time.");
+            }
+
+            await Task.Delay(50, CancellationToken.None);
+        }
+    }
+
     private static async Task<JsonElement> PollUntilTerminalAsync(HttpClient client, Guid jobId, TimeSpan timeout)
     {
         using var cts = new CancellationTokenSource(timeout);
-        while (true)
+        string? lastBody = null;
+        while (!cts.IsCancellationRequested)
         {
-            var response = await client.GetAsync($"/api/v1/jobs/{jobId}", cts.Token);
-            var body = await response.Content.ReadAsStringAsync(cts.Token);
-            var doc = JsonDocument.Parse(body);
+            var response = await client.GetAsync($"/api/v1/jobs/{jobId}");
+            lastBody = await response.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(lastBody);
             var status = doc.RootElement.GetProperty("status").GetString();
 
             if (status is "COMPLETADO" or "ERROR")
@@ -153,7 +251,9 @@ public sealed class JobQueueTests : IClassFixture<WebApplicationFactory<Program>
                 return doc.RootElement;
             }
 
-            await Task.Delay(200, cts.Token);
+            await Task.Delay(200);
         }
+
+        throw new TimeoutException($"Job {jobId} did not reach a terminal state within {timeout}. Last body: {lastBody}");
     }
 }

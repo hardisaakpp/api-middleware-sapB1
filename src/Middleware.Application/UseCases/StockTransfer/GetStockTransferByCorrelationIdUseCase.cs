@@ -22,6 +22,6 @@ public sealed class GetStockTransferByCorrelationIdUseCase
 
         var result = await _gateway.GetStockTransferByCorrelationIdAsync(uSapId, cancellationToken);
 
-        return result is null ? null : new StockTransferResponse(result.DocEntry, result.DocNum);
+        return result is null ? null : new StockTransferResponse(result.DocEntry, result.DocNum, null, result.Recovered);
     }
 }

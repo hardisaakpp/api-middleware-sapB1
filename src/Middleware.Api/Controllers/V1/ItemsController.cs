@@ -20,7 +20,6 @@ namespace Middleware.Api.Controllers.V1;
 public sealed class ItemsController : ControllerBase // NOSONAR
 {
     private readonly IJobExecutionCoordinator _jobCoordinator;
-    private readonly GetItemsBatchUseCase _getItemsBatchUseCase;
     private readonly IValidator<GetItemsBatchRequest> _batchValidator;
     private readonly GetItemsStockBatchUseCase _getItemsStockBatchUseCase;
     private readonly IValidator<GetItemsStockBatchRequest> _stockBatchValidator;
@@ -28,14 +27,12 @@ public sealed class ItemsController : ControllerBase // NOSONAR
 
     public ItemsController(
         IJobExecutionCoordinator jobCoordinator,
-        GetItemsBatchUseCase getItemsBatchUseCase,
         IValidator<GetItemsBatchRequest> batchValidator,
         GetItemsStockBatchUseCase getItemsStockBatchUseCase,
         IValidator<GetItemsStockBatchRequest> stockBatchValidator,
         GetItemsAvailableStockBatchUseCase getItemsAvailableStockBatchUseCase)
     {
         _jobCoordinator = jobCoordinator;
-        _getItemsBatchUseCase = getItemsBatchUseCase;
         _batchValidator = batchValidator;
         _getItemsStockBatchUseCase = getItemsStockBatchUseCase;
         _stockBatchValidator = stockBatchValidator;
@@ -46,12 +43,16 @@ public sealed class ItemsController : ControllerBase // NOSONAR
     /// Fetches full master data for up to 100 items in a single call. Codes that do not
     /// exist in SAP are listed in notFound; result order is not guaranteed. A Service
     /// Layer connectivity failure fails the whole request (no silent partial results).
+    /// Follows the same job-queue pattern as the sibling item endpoints: a healthy batch
+    /// completes inline and returns 200; if SAP is slow past QueueAfterSeconds or fails
+    /// transiently, the work is durably queued and 202 + jobId is returned to poll via
+    /// GET /api/v1/jobs/{jobId} (instead of an immediate, non-recoverable 503).
     /// </summary>
     [HttpPost("batch")]
     [ProducesResponseType(typeof(ItemsBatchResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
-    public async Task<ActionResult<ItemsBatchResponse>> GetBatch(
+    public async Task<IActionResult> GetBatch(
         [FromBody] GetItemsBatchRequest request,
         CancellationToken cancellationToken)
     {
@@ -65,8 +66,22 @@ public sealed class ItemsController : ControllerBase // NOSONAR
             return ValidationProblem(ModelState);
         }
 
-        var result = await _getItemsBatchUseCase.ExecuteAsync(request, cancellationToken);
-        return Ok(result);
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetItemsBatch",
+            "POST /api/v1/items/batch",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetItemsBatchUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<ItemsBatchResponse> c => Ok(c.Response),
+            JobQueued<ItemsBatchResponse> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
     }
 
     /// <summary>
@@ -122,6 +137,42 @@ public sealed class ItemsController : ControllerBase // NOSONAR
         }
     }
 
+    /// <summary>
+    /// Busca ítems por ItemCode o BarCode (contains, no exacto) — para P-012 de api-cedi
+    /// ("Consulta Stock"). Ruta separada de GET /{itemCode} para no confundir "buscar" con
+    /// "traer por clave exacta".
+    /// </summary>
+    [HttpGet("search")]
+    [ProducesResponseType(typeof(IReadOnlyList<ItemSearchResult>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Search(
+        [FromQuery] string query, [FromQuery] int top = 20, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return BadRequest(new ProblemDetails { Title = "Invalid request", Detail = "query is required." });
+        }
+
+        top = Math.Clamp(top, 1, 100);
+        var payloadJson = JsonSerializer.Serialize(new SearchItemsJobRequest(query, top));
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "SearchItems",
+            $"GET /api/v1/items/search?query={query}&top={top}",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<SearchItemsUseCase>().ExecuteAsync(query, top, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<IReadOnlyList<ItemSearchResult>> c => Ok(c.Response),
+            JobQueued<IReadOnlyList<ItemSearchResult>> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
     [HttpGet("{itemCode}")]
     [ProducesResponseType(typeof(ItemResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
@@ -142,6 +193,35 @@ public sealed class ItemsController : ControllerBase // NOSONAR
         {
             JobCompleted<ItemResponse?> c => c.Response is null ? NotFound() : Ok(c.Response),
             JobQueued<ItemResponse?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    /// <summary>
+    /// Stock del ítem en TODOS los almacenes de una vez (solo los que tienen InStock o
+    /// Committed distinto de cero) — para P-012 de api-cedi ("mostrar por ubicación").
+    /// Evita N llamadas (una por almacén) a GetStock.
+    /// </summary>
+    [HttpGet("{itemCode}/stock")]
+    [ProducesResponseType(typeof(IReadOnlyList<ItemStockResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetStockAllWarehouses(string itemCode, CancellationToken cancellationToken)
+    {
+        var payloadJson = JsonSerializer.Serialize(new GetItemStockAllWarehousesJobRequest(itemCode));
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetItemStockAllWarehouses",
+            $"GET /api/v1/items/{itemCode}/stock",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetItemStockAllWarehousesUseCase>().ExecuteAsync(itemCode, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<IReadOnlyList<ItemStockResponse>?> c => c.Response is null ? NotFound() : Ok(c.Response),
+            JobQueued<IReadOnlyList<ItemStockResponse>?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
@@ -306,22 +386,27 @@ public sealed class ItemsController : ControllerBase // NOSONAR
     }
 
     /// <summary>
-    /// Combined existence check across PurchaseOrders/InventoryGenEntries/InventoryTransferRequests —
-    /// used by callers to decide if an item is still editable. Synchronous by design (no job queue):
-    /// this is a fast yes/no the caller needs immediately, unlike this API's write endpoints where
-    /// queueing a slow SAP write behind a 202 makes sense. A SAP outage surfaces as-is through
-    /// GlobalExceptionMiddleware (503/504), consistent with the other synchronous read endpoints
-    /// (Warehouses, Validations).
+    /// Atomic item-master balance check used by callers to decide if an item is still editable.
+    /// Synchronous by design: callers need the answer before performing an upsert. SAP failures are
+    /// passed through with their original status; transport failures are handled by the global pipeline.
     /// </summary>
     [HttpGet("{itemCode}/has-movements")]
     [ProducesResponseType(typeof(HasItemMovementsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status502BadGateway)]
     public async Task<ActionResult<HasItemMovementsResponse>> GetHasMovements(
-        string itemCode,
+        [FromRoute] string itemCode,
         [FromServices] HasItemMovementsUseCase hasMovementsUseCase,
         CancellationToken cancellationToken)
     {
-        var result = await hasMovementsUseCase.ExecuteAsync(itemCode, cancellationToken);
-        return Ok(result);
+        try
+        {
+            var result = await hasMovementsUseCase.ExecuteAsync(itemCode, cancellationToken);
+            return Ok(result);
+        }
+        catch (SapException ex)
+        {
+            return SapErrorResult(ex);
+        }
     }
 
     // Preserves SAP's original status/body instead of the generic 502 GlobalExceptionMiddleware
