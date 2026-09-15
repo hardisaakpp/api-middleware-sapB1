@@ -91,13 +91,12 @@ public static class ApiLogDocumentTraceParser
             return false;
         }
 
-        foreach (var property in element.EnumerateObject().Where(property => property.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-        {
-            value = property.Value;
-            return true;
-        }
+        var match = element.EnumerateObject()
+            .Where(property => property.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            .Select(property => (JsonElement?)property.Value)
+            .FirstOrDefault();
 
-        value = default;
-        return false;
+        value = match ?? default;
+        return match is not null;
     }
 }
