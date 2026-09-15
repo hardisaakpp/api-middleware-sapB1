@@ -10,6 +10,18 @@ namespace Middleware.Infrastructure.Jobs;
 
 internal sealed class JobExecutionCoordinator : IJobExecutionCoordinator
 {
+    // Incidente 15/09/2026: el intento original de /direct venció por timeout HTTP (30s) mientras
+    // SAP seguía procesando ese mismo POST del lado del servidor. El reintento salió sin espera,
+    // la consulta previa por U_sap_id (SapGateway.CreateDocumentIdempotentAsync) todavía no
+    // encontró nada porque SAP no había terminado de guardar el documento, y el reintento creó un
+    // segundo StockTransfer con el mismo U_sap_id (DocEntry 587198 y 587200). Darle un respiro a
+    // SAP antes de ese primer reintento aumenta la chance de que la consulta previa lo encuentre en
+    // vez de duplicarlo. Solo /direct: es el único endpoint sin validación de "mismo pedido" (cada
+    // clave ya es única por diseño), así que encontrar el documento un poco tarde ahí no arriesga
+    // mezclar dos pedidos distintos, a diferencia de los endpoints con StockTransferSpec.
+    private const string DirectEndpoint = "POST /api/v1/stock-transfers/direct";
+    private static readonly TimeSpan DirectFirstRetryDelay = TimeSpan.FromSeconds(15);
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IJobQueueRepository _repository;
     private readonly JobRunner _jobRunner;
@@ -85,7 +97,7 @@ internal sealed class JobExecutionCoordinator : IJobExecutionCoordinator
         }
         else
         {
-            _ = HandleFirstAttemptOutcomeAsync(jobId, firstAttempt, successStatusCode, RunOnceAsync);
+            _ = HandleFirstAttemptOutcomeAsync(jobId, endpoint, firstAttempt, successStatusCode, RunOnceAsync);
         }
 
         return new JobQueued<TResponse>(jobId);
@@ -112,7 +124,7 @@ internal sealed class JobExecutionCoordinator : IJobExecutionCoordinator
     }
 
     private async Task HandleFirstAttemptOutcomeAsync<TResponse>(
-        Guid jobId, Task<TResponse> firstAttempt, int successStatusCode, Func<Task<TResponse>> retryAttempt)
+        Guid jobId, string endpoint, Task<TResponse> firstAttempt, int successStatusCode, Func<Task<TResponse>> retryAttempt)
     {
         try
         {
@@ -121,6 +133,14 @@ internal sealed class JobExecutionCoordinator : IJobExecutionCoordinator
         }
         catch (Exception ex) when (JobExceptionClassifier.IsTransient(ex))
         {
+            if (endpoint == DirectEndpoint)
+            {
+                _logger.LogInformation(ex,
+                    "Job {JobId} ({Endpoint}): esperando {DelaySeconds}s antes del primer reintento para darle tiempo a SAP de terminar el intento original",
+                    jobId, endpoint, DirectFirstRetryDelay.TotalSeconds);
+                await Task.Delay(DirectFirstRetryDelay, CancellationToken.None);
+            }
+
             await _jobRunner.RetryUntilResolvedAsync(jobId, attemptsSoFar: 0, retryAttempt, successStatusCode, CancellationToken.None);
         }
         catch (Exception ex)
