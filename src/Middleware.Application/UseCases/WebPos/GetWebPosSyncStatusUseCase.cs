@@ -101,7 +101,7 @@ public sealed class GetWebPosSyncStatusUseCase
 
         // Solo la página visible se completa contra SAP.
         var completed = await EnsureDocNumsAsync(
-            rejected.Items.Where(e => matching.Any(m => m.DocType == e.DocType && m.DocEntry == e.DocEntry)).ToList(), ct);
+            rejected.Items.Where(e => matching.Exists(m => m.DocType == e.DocType && m.DocEntry == e.DocEntry)).ToList(), ct);
 
         return new PagedResult<WebPosSyncStatusResponse>(completed.Select(ToResponse).ToList(), matchingTotal, page, pageSize);
     }
