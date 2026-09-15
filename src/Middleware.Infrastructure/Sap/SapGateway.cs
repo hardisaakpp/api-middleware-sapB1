@@ -393,6 +393,7 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
+        Exception inconclusiveDirect;
         try
         {
             var json = await ExecuteWithRetryOn401Async(
@@ -403,23 +404,28 @@ internal sealed class SapGateway : ISapGateway
         // distintas pueden compartir origen-destino con listas de ítems diferentes, y cada una ya
         // llega con su propia clave (GUID) — no hay riesgo de colisión entre pedidos. Por eso basta
         // reconocer "SAP pudo haber creado el documento pese al error" con el mismo criterio que usa
-        // CreateDocumentIdempotentAsync (MayHaveCreatedDocument), sin necesitar todo ese mecanismo.
+        // CreateDocumentIdempotentAsync (MayHaveCreatedDocument).
         catch (Exception ex) when (!string.IsNullOrEmpty(request.U_sap_id) && MayHaveCreatedDocument(ex))
         {
-            _logger.LogWarning(ex, // NOSONAR
-                "SAP POST StockTransfers failed transiently for U_sap_id={USapId}. Checking for orphaned transfer...",
-                request.U_sap_id);
-
-            var recovered = await FindStockTransferByCorrelationIdAsync(request.U_sap_id, ct);
-            if (recovered is not null)
-            {
-                _logger.LogWarning( // NOSONAR
-                    "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
-                    recovered.DocEntry, recovered.DocNum, request.U_sap_id);
-                return recovered with { Recovered = true };
-            }
-            throw;
+            // Se guarda y se resuelve fuera del catch: registrar y relanzar en el mismo bloque
+            inconclusiveDirect = ex;
         }
+
+        _logger.LogWarning(inconclusiveDirect, // NOSONAR
+            "SAP POST StockTransfers failed transiently for U_sap_id={USapId}. Checking for orphaned transfer...",
+            request.U_sap_id);
+
+        var recoveredDirect = await FindStockTransferByCorrelationIdAsync(request.U_sap_id, ct);
+        if (recoveredDirect is not null)
+        {
+            _logger.LogWarning( // NOSONAR
+                "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
+                recoveredDirect.DocEntry, recoveredDirect.DocNum, request.U_sap_id);
+            return recoveredDirect with { Recovered = true };
+        }
+
+        ExceptionDispatchInfo.Capture(inconclusiveDirect).Throw();
+        throw inconclusiveDirect;
     }
 
     private async Task<DocumentCreatedResult?> FindStockTransferByCorrelationIdAsync(string uSapId, CancellationToken ct)
