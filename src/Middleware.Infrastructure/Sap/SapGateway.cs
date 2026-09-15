@@ -393,28 +393,39 @@ internal sealed class SapGateway : ISapGateway
             })
         }, JsonOptions);
 
+        Exception inconclusiveDirect;
         try
         {
             var json = await ExecuteWithRetryOn401Async(
                 HttpMethod.Post, StockTransfersResource, payload, _settings.TestCompanyDb, _settings.TestPassword, ct);
             return ParseDocumentResult(json);
         }
-        catch (TimeoutRejectedException) when (!string.IsNullOrEmpty(request.U_sap_id))
+        // /direct no valida "mismo pedido" (a diferencia de StockTransferSpec): dos transferencias
+        // distintas pueden compartir origen-destino con listas de ítems diferentes, y cada una ya
+        // llega con su propia clave (GUID) — no hay riesgo de colisión entre pedidos. Por eso basta
+        // reconocer "SAP pudo haber creado el documento pese al error" con el mismo criterio que usa
+        // CreateDocumentIdempotentAsync (MayHaveCreatedDocument).
+        catch (Exception ex) when (!string.IsNullOrEmpty(request.U_sap_id) && MayHaveCreatedDocument(ex))
+        {
+            // Se guarda y se resuelve fuera del catch: registrar y relanzar en el mismo bloque
+            inconclusiveDirect = ex;
+        }
+
+        _logger.LogWarning(inconclusiveDirect, // NOSONAR
+            "SAP POST StockTransfers failed transiently for U_sap_id={USapId}. Checking for orphaned transfer...",
+            request.U_sap_id);
+
+        var recoveredDirect = await FindStockTransferByCorrelationIdAsync(request.U_sap_id, ct);
+        if (recoveredDirect is not null)
         {
             _logger.LogWarning( // NOSONAR
-                "SAP POST StockTransfers timed out for U_sap_id={USapId}. Checking for orphaned transfer...",
-                request.U_sap_id);
-
-            var recovered = await FindStockTransferByCorrelationIdAsync(request.U_sap_id, ct);
-            if (recovered is not null)
-            {
-                _logger.LogWarning( // NOSONAR
-                    "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
-                    recovered.DocEntry, recovered.DocNum, request.U_sap_id);
-                return recovered with { Recovered = true };
-            }
-            throw;
+                "Recovered orphaned StockTransfer: DocEntry={DocEntry}, DocNum={DocNum}, U_sap_id={USapId}",
+                recoveredDirect.DocEntry, recoveredDirect.DocNum, request.U_sap_id);
+            return recoveredDirect with { Recovered = true };
         }
+
+        ExceptionDispatchInfo.Capture(inconclusiveDirect).Throw();
+        throw inconclusiveDirect;
     }
 
     private async Task<DocumentCreatedResult?> FindStockTransferByCorrelationIdAsync(string uSapId, CancellationToken ct)
@@ -547,9 +558,11 @@ internal sealed class SapGateway : ISapGateway
         foreach (var line in linesEl.EnumerateArray())
         {
             string LineStr(string f) => line.TryGetProperty(f, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : string.Empty;
+            int LineInt(string f) => line.TryGetProperty(f, out var p) && p.TryGetInt32(out var v) ? v : 0;
             decimal LineDec(string f) => line.TryGetProperty(f, out var p) && p.TryGetDecimal(out var v) ? v : 0m;
 
             lines.Add(new StockTransferLineStatusResponse(
+                LineInt("LineNum"),
                 LineStr("ItemCode"),
                 LineStr(ItemDescriptionProperty),
                 LineDec(QuantityProperty),
@@ -2647,6 +2660,7 @@ internal sealed class SapGateway : ISapGateway
 
         return new DocumentCreatedResult(docEntry, docNum);
     }
+
 }
 
 file sealed record SapItemMovementBalances(
