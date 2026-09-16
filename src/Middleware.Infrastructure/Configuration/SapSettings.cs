@@ -16,4 +16,10 @@ public sealed class SapSettings
 
     /// <summary>Password for UserName against TestCompanyDb. SAP B1 users are scoped per CompanyDB, so this can differ from Password.</summary>
     public string? TestPassword { get; init; }
+
+    /// <summary>CompanyDB for the Comercial Ecuador SAP B1 company — used by Bank Deposits (ODPS) posted via POST /api/Deposit/CE.</summary>
+    public string? ComercialEcuadorCompanyDb { get; init; }
+
+    /// <summary>Password for UserName against ComercialEcuadorCompanyDb. SAP B1 users are scoped per CompanyDB, so this can differ from Password.</summary>
+    public string? ComercialEcuadorPassword { get; init; }
 }

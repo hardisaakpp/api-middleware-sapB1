@@ -24,6 +24,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Middleware.Application\Middleware.Application.csproj" />
     <ProjectReference Include="..\..\src\Middleware.Domain\Middleware.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Middleware.Infrastructure\Middleware.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

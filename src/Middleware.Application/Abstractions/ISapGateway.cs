@@ -28,6 +28,13 @@ public interface ISapGateway
     public Task<DocumentCreatedResult> CreateStockTransferRequestAsync(CreateStockTransferRequest request, CancellationToken ct = default);
     public Task<StockTransferStatusResponse?> GetStockTransferStatusAsync(int docEntry, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateDepositAsync(CreateDepositRequest request, string companyDb, CancellationToken ct = default);
+
+    /// <summary>Creates a SAP B1 Bank Deposit (object ODPS, Service Layer resource "Deposits") against Sap:CompanyDb / Sap:Password (Mabel Trading).</summary>
+    public Task<BankDepositResult> CreateBankDepositAsync(CreateBankDepositRequest request, CancellationToken ct = default);
+
+    /// <summary>Same as <see cref="CreateBankDepositAsync"/> but logs in against Sap:ComercialEcuadorCompanyDb / Sap:ComercialEcuadorPassword.</summary>
+    public Task<BankDepositResult> CreateBankDepositForComercialEcuadorAsync(CreateBankDepositRequest request, CancellationToken ct = default);
+
     public Task<DocumentCreatedResult> CreateGoodsReceiptAsync(CreateGoodsReceiptRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreateLiquidacionAsync(CreateLiquidacionRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreatePurchaseOrderAsync(CreatePurchaseOrderRequest request, CancellationToken ct = default);
@@ -168,6 +175,14 @@ public interface ISapGateway
     public Task<IReadOnlyList<PriceListResponse>> GetPriceListsAsync(CancellationToken ct = default);
 
     /// <summary>
+    /// Fetches active bank accounts (ChartOfAccounts, FormatCode starting with "1.01.01" — Bancos /
+    /// Disponible, excluyendo CxC 1.01.02, retenciones 1.01.03, inventarios 1.01.04, anticipos
+    /// 1.01.06, etc.) from the default company (Sap:CompanyDb = Mabel Trading). Follows Service
+    /// Layer paging internally.
+    /// </summary>
+    public Task<IReadOnlyList<ChartOfAccountResponse>> GetBankAccountsAsync(CancellationToken ct = default);
+
+    /// <summary>
     /// True when the item master has positive stock, vendor orders, or customer commitments.
     /// A missing item (SAP 404) returns false.
     /// </summary>
@@ -211,6 +226,9 @@ public sealed record StockTransferDocumentLine(string ItemCode, decimal Quantity
 /// por timeout o por un reenvío del módulo, y se devuelve el existente en vez de duplicarlo.
 /// </summary>
 public sealed record DocumentCreatedResult(int DocEntry, int DocNum, bool Recovered = false);
+
+/// <summary>Result of creating a SAP Bank Deposit (ODPS). Mensaje carries an optional status/detail message from SAP.</summary>
+public sealed record BankDepositResult(int DocEntry, string? Mensaje);
 
 public sealed record SapItemValidationData(
     string ItemCode,
