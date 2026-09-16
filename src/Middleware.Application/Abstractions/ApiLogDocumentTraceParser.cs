@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 
 namespace Middleware.Application.Abstractions;
@@ -30,7 +31,7 @@ public static class ApiLogDocumentTraceParser
         }
     }
 
-    private static IReadOnlyList<string> ReadWarehouses(string docType, string? request)
+    private static List<string> ReadWarehouses(string docType, string? request)
     {
         if (string.IsNullOrWhiteSpace(request))
         {
@@ -84,22 +85,14 @@ public static class ApiLogDocumentTraceParser
     /// <summary>Los clientes mandan camelCase o PascalCase; la respuesta del middleware siempre camelCase.</summary>
     private static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
     {
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            value = default;
-            return false;
-        }
+        var match = element.ValueKind == JsonValueKind.Object
+            ? element.EnumerateObject()
+                .Where(property => property.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                .Select(property => (JsonElement?)property.Value)
+                .FirstOrDefault()
+            : null;
 
-        foreach (var property in element.EnumerateObject())
-        {
-            if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            {
-                value = property.Value;
-                return true;
-            }
-        }
-
-        value = default;
-        return false;
+        value = match ?? default;
+        return match is not null;
     }
 }

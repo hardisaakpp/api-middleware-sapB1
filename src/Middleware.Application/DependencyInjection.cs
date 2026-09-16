@@ -45,9 +45,11 @@ public static class DependencyInjection
         services.AddScoped<CreateBankDepositUseCase>();
         services.AddScoped<CreateBankDepositComercialEcuadorUseCase>();
         services.AddScoped<CreateGoodsReceiptUseCase>();
+        services.AddScoped<GetGoodsReceiptsByBaseEntryUseCase>();
         services.AddScoped<CreateLiquidacionUseCase>();
         services.AddScoped<CreatePurchaseOrderUseCase>();
         services.AddScoped<GetPurchaseOrderUseCase>();
+        services.AddScoped<GetPurchaseOrderByDocNumUseCase>();
         services.AddScoped<GetPurchaseOrdersUseCase>();
         services.AddScoped<UpdatePurchaseOrderUseCase>();
         services.AddScoped<UpdatePurchaseOrderStatusUseCase>();
@@ -78,6 +80,7 @@ public static class DependencyInjection
         services.AddScoped<IJobHandler, UpdatePurchaseOrderJobHandler>();
         services.AddScoped<IJobHandler, UpdatePurchaseOrderStatusJobHandler>();
         services.AddScoped<IJobHandler, GetPurchaseOrderJobHandler>();
+        services.AddScoped<IJobHandler, GetPurchaseOrderByDocNumJobHandler>();
         services.AddScoped<IJobHandler, GetPurchaseOrdersJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferBasedOnDocumentJobHandler>();
         services.AddScoped<IJobHandler, CreateStockTransferForCompanyJobHandler>();

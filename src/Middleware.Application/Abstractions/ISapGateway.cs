@@ -39,6 +39,9 @@ public interface ISapGateway
     public Task<DocumentCreatedResult> CreateLiquidacionAsync(CreateLiquidacionRequest request, CancellationToken ct = default);
     public Task<DocumentCreatedResult> CreatePurchaseOrderAsync(CreatePurchaseOrderRequest request, CancellationToken ct = default);
     public Task<PurchaseOrderResponse?> GetPurchaseOrderAsync(int docEntry, CancellationToken ct = default);
+
+    /// <summary>Resolves a PurchaseOrder's DocEntry from its DocNum (Service Layer only indexes by DocEntry). Returns null if no match exists in SAP.</summary>
+    public Task<int?> GetPurchaseOrderDocEntryByDocNumAsync(int docNum, CancellationToken ct = default);
     public Task<PurchaseOrdersListResponse> GetPurchaseOrdersAsync(GetPurchaseOrdersRequest request, CancellationToken ct = default);
     public Task UpdatePurchaseOrderAsync(int docEntry, UpdatePurchaseOrderRequest request, CancellationToken ct = default);
     public Task UpdatePurchaseOrderStatusAsync(int docEntry, string status, CancellationToken ct = default);
@@ -160,6 +163,14 @@ public interface ISapGateway
     /// </summary>
     public Task<GoodsReceiptDocumentResponse?> GetGoodsReceiptAsync(int docEntry, CancellationToken ct = default);
 
+    /// <summary>
+    /// Lists every Goods Receipt (PurchaseDeliveryNote) with at least one line whose BaseEntry
+    /// references the given Purchase Order DocEntry — i.e. every receipt created against that PO,
+    /// in full or in part, regardless of which system created it. Only the matching lines are
+    /// returned per document (a receipt can also carry lines from other POs).
+    /// </summary>
+    public Task<IReadOnlyList<GoodsReceiptForPurchaseOrderResponse>> GetGoodsReceiptsByBaseEntryAsync(int baseEntry, string vendorCode, CancellationToken ct = default);
+
     /// <summary>Fetches the full SAP price list catalog (id + name only).</summary>
     public Task<IReadOnlyList<PriceListResponse>> GetPriceListsAsync(CancellationToken ct = default);
 
@@ -186,6 +197,15 @@ public sealed record GoodsReceiptDocumentResponse(
 
 public sealed record GoodsReceiptDocumentLine(string ItemCode, decimal Quantity, string WarehouseCode);
 
+public sealed record GoodsReceiptForPurchaseOrderResponse(
+    int DocEntry,
+    int DocNum,
+    string DocDate,
+    IReadOnlyList<GoodsReceiptForPurchaseOrderLine> Lines
+);
+
+public sealed record GoodsReceiptForPurchaseOrderLine(int LineNum, string ItemCode, decimal Quantity, int BaseEntry, int BaseLine);
+
 public sealed record WarehousePosInfo(string WarehouseCode, bool IsPosEnabled, string? CodBusiness);
 
 public sealed record ItemPosEnrichment(string? Price, string? Brand, string? CodeTax, IReadOnlyList<string> Barcodes);
@@ -200,7 +220,12 @@ public sealed record StockTransferDocumentResponse(
 
 public sealed record StockTransferDocumentLine(string ItemCode, decimal Quantity, string WarehouseCode);
 
-public sealed record DocumentCreatedResult(int DocEntry, int DocNum);
+/// <summary>
+/// Documento creado en SAP. <paramref name="Recovered"/> = true cuando NO se creó en esta llamada:
+/// ya existía con la misma clave de idempotencia (U_sap_id), sea por un intento anterior que venció
+/// por timeout o por un reenvío del módulo, y se devuelve el existente en vez de duplicarlo.
+/// </summary>
+public sealed record DocumentCreatedResult(int DocEntry, int DocNum, bool Recovered = false);
 
 /// <summary>Result of creating a SAP Bank Deposit (ODPS). Mensaje carries an optional status/detail message from SAP.</summary>
 public sealed record BankDepositResult(int DocEntry, string? Mensaje);

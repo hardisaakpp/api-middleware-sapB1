@@ -26,6 +26,7 @@ internal static class JobExceptionClassifier
         SapResponseException => (int)HttpStatusCode.BadGateway,
         WebPosException => (int)HttpStatusCode.BadGateway,
         ArgumentException => (int)HttpStatusCode.BadRequest,
+        IdempotencyKeyConflictException => (int)HttpStatusCode.Conflict,
         SapThrottleException => (int)HttpStatusCode.ServiceUnavailable,
         WebPosThrottleException => (int)HttpStatusCode.ServiceUnavailable,
         BrokenCircuitException => (int)HttpStatusCode.ServiceUnavailable,

@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using Middleware.Api.Idempotency;
 using Microsoft.Extensions.DependencyInjection;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
@@ -59,6 +60,14 @@ public sealed class PurchaseOrdersController : ControllerBase // NOSONAR
         [FromBody] CreatePurchaseOrderRequest request,
         CancellationToken cancellationToken)
     {
+        // Clave de idempotencia (u_sap_id o Idempotency-Key, o GUID generado): el UDF U_sap_id existe en OPOR.
+        var (key, problem) = IdempotencyKeyResolver.Resolve(Request, request.U_sap_id, generateWhenMissing: true);
+        if (problem is not null)
+        {
+            return BadRequest(problem);
+        }
+
+        request = request with { U_sap_id = key };
         var payloadJson = JsonSerializer.Serialize(request);
 
         var outcome = await _jobCoordinator.ExecuteAsync(
@@ -95,6 +104,27 @@ public sealed class PurchaseOrdersController : ControllerBase // NOSONAR
             (sp, ct) => sp.GetRequiredService<GetPurchaseOrderUseCase>().ExecuteAsync(request, ct),
             (int)HttpStatusCode.OK,
             cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<PurchaseOrderResponse?> c => c.Response is null ? NotFound() : Ok(c.Response),
+            JobQueued<PurchaseOrderResponse?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    [HttpGet("by-doc-num/{docNum:int}")]
+    [ProducesResponseType(typeof(PurchaseOrderResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetByDocNum(int docNum, CancellationToken cancellationToken)
+    {
+        var request = new GetPurchaseOrderByDocNumRequest(docNum);
+        var payloadJson = JsonSerializer.Serialize(request);
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetPurchaseOrderByDocNum", $"GET /api/v1/purchase-orders/by-doc-num/{docNum}", payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetPurchaseOrderByDocNumUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.OK, cancellationToken);
 
         return outcome switch
         {

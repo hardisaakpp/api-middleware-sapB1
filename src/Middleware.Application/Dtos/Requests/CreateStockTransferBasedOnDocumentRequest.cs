@@ -1,4 +1,5 @@
 using FluentValidation;
+using Middleware.Application.Idempotency;
 
 namespace Middleware.Application.Dtos.Requests;
 
@@ -13,7 +14,13 @@ public sealed record CreateStockTransferBasedOnDocumentRequest(
     string? U_ORIGEN,
     int? Series,
     int? PriceList,
-    IReadOnlyList<StockTransferBasedOnDocumentLineDto> StockTransferLines
+    IReadOnlyList<StockTransferBasedOnDocumentLineDto> StockTransferLines,
+    // Clave de idempotencia. Se escribe en el UDF U_sap_id del StockTransfer y permite
+    // reconocer un documento que SAP sí creó aunque el POST haya fallado por timeout/corte
+    // de conexión: antes de cada POST se busca por esta clave y, si ya existe, se devuelve
+    // sin volver a crear. El controller la completa (header Idempotency-Key o GUID) cuando
+    // el cliente no la envía, por eso es opcional y va al final.
+    string? U_sap_id = null
 );
 
 public sealed record StockTransferBasedOnDocumentLineDto(
@@ -30,6 +37,8 @@ public sealed class CreateStockTransferBasedOnDocumentRequestValidator : Abstrac
     public CreateStockTransferBasedOnDocumentRequestValidator()
     {
         RuleFor(x => x.DocDate).NotEmpty();
+        RuleFor(x => x.U_sap_id).MaximumLength(IdempotencyKey.MaxLength).Matches(IdempotencyKey.AllowedPattern)
+            .WithMessage(IdempotencyKey.FormatMessage);
         RuleFor(x => x.FromWarehouse).NotEmpty().MaximumLength(8);
         RuleFor(x => x.ToWarehouse).NotEmpty().MaximumLength(8);
         RuleFor(x => x.FromWarehouse).NotEqual(x => x.ToWarehouse)

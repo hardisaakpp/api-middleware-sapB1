@@ -32,6 +32,6 @@ public sealed class CreateStockTransferForCompanyUseCase
 
         _logger.LogInformation("StockTransfer created: DocEntry={DocEntry}, DocNum={DocNum}", result.DocEntry, result.DocNum);
 
-        return new StockTransferResponse(result.DocEntry, result.DocNum);
+        return new StockTransferResponse(result.DocEntry, result.DocNum, null, result.Recovered);
     }
 }
