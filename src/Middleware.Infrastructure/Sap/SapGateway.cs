@@ -1024,15 +1024,25 @@ internal sealed class SapGateway : ISapGateway
         }
 
         using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        return MapPurchaseOrder(doc.RootElement, $"PurchaseOrder DocEntry={docEntry}");
+    }
 
+    /// <summary>
+    /// Parsea un objeto PurchaseOrders de SAP Service Layer (cabecera + DocumentLines) a
+    /// PurchaseOrderResponse. Extraido de GetPurchaseOrderAsync para reusarlo tambien en
+    /// GetPurchaseOrdersPendientesAsync (un item por cada orden del array "value") sin
+    /// duplicar el mapeo de campos — en particular el nombre real de SAP para la cantidad
+    /// pendiente ("RemainingOpenQuantity", no "OpenQuantity", ver comentario abajo).
+    /// </summary>
+    private static PurchaseOrderResponse MapPurchaseOrder(JsonElement root, string contexto)
+    {
         int RequiredInt(JsonElement el, string field, string ctx)
         {
             if (el.TryGetProperty(field, out var p) && p.TryGetInt32(out var v))
             {
                 return v;
             }
-            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
+            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de {contexto}");
         }
         string RequiredString(JsonElement el, string field, string ctx)
         {
@@ -1040,7 +1050,7 @@ internal sealed class SapGateway : ISapGateway
             {
                 return p.GetString()!;
             }
-            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
+            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de {contexto}");
         }
         decimal RequiredDecimal(JsonElement el, string field, string ctx)
         {
@@ -1048,7 +1058,7 @@ internal sealed class SapGateway : ISapGateway
             {
                 return v;
             }
-            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de PurchaseOrder DocEntry={docEntry}");
+            throw new SapResponseException($"SAP no devolvió el campo '{field}' en {ctx} de {contexto}");
         }
         string? OptionalString(JsonElement el, string field) =>
             el.TryGetProperty(field, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
@@ -1115,6 +1125,46 @@ internal sealed class SapGateway : ISapGateway
             ?? [];
 
         return new PurchaseOrdersListResponse(items, items.Count);
+    }
+
+    private const int TopPendientesMaximo = 200;
+
+    public async Task<IReadOnlyList<PurchaseOrderResponse>> GetPurchaseOrdersPendientesAsync(
+        GetPurchaseOrdersPendientesRequest request, CancellationToken ct = default)
+    {
+        var desde = request.Desde.ToString("yyyy-MM-dd");
+        var hasta = request.Hasta.ToString("yyyy-MM-dd");
+        var resource =
+            $"PurchaseOrders?$filter=DocumentStatus eq 'bost_Open' and DocDate ge '{desde}' and DocDate le '{hasta}'" +
+            $"&$orderby=DocDate desc&$top={TopPendientesMaximo}";
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty(ValueProperty, out var arr))
+        {
+            return [];
+        }
+
+        var almacenes = new HashSet<string>(request.WarehouseCodes, StringComparer.OrdinalIgnoreCase);
+        var resultado = new List<PurchaseOrderResponse>();
+        var indice = 0;
+        foreach (var item in arr.EnumerateArray())
+        {
+            var orden = MapPurchaseOrder(item, $"PurchaseOrders pendientes [{indice}]");
+            indice++;
+
+            // Service Layer no soporta $filter sobre DocumentLines/WarehouseCode (coleccion
+            // anidada) — se filtra aca en memoria, mismo criterio de "pendiente" que ya usa
+            // api-recepcion-proveedores (almacen solicitado + OpenQuantity > 0 en esa linea).
+            var tienePendienteEnAlmacen = orden.Lines.Any(l => almacenes.Contains(l.WarehouseCode) && l.OpenQuantity > 0);
+            if (tienePendienteEnAlmacen)
+            {
+                resultado.Add(orden);
+            }
+        }
+
+        return resultado;
     }
 
     public async Task UpdatePurchaseOrderAsync(int docEntry, UpdatePurchaseOrderRequest request, CancellationToken ct = default)

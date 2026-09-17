@@ -43,6 +43,14 @@ public interface ISapGateway
     /// <summary>Resolves a PurchaseOrder's DocEntry from its DocNum (Service Layer only indexes by DocEntry). Returns null if no match exists in SAP.</summary>
     public Task<int?> GetPurchaseOrderDocEntryByDocNumAsync(int docNum, CancellationToken ct = default);
     public Task<PurchaseOrdersListResponse> GetPurchaseOrdersAsync(GetPurchaseOrdersRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ordenes de compra abiertas (bost_Open) con fecha entre Desde/Hasta, con al menos una
+    /// linea pendiente (RemainingOpenQuantity > 0) en alguno de los almacenes pedidos. El
+    /// filtro por almacen se hace en memoria (Service Layer no soporta $filter sobre
+    /// colecciones anidadas como DocumentLines/WarehouseCode).
+    /// </summary>
+    public Task<IReadOnlyList<PurchaseOrderResponse>> GetPurchaseOrdersPendientesAsync(GetPurchaseOrdersPendientesRequest request, CancellationToken ct = default);
     public Task UpdatePurchaseOrderAsync(int docEntry, UpdatePurchaseOrderRequest request, CancellationToken ct = default);
     public Task UpdatePurchaseOrderStatusAsync(int docEntry, string status, CancellationToken ct = default);
     public Task<ItemResponse?> GetItemAsync(string itemCode, CancellationToken ct = default);
