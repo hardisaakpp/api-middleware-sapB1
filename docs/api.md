@@ -1058,6 +1058,13 @@ Stock del artículo en una bodega.
   como código legible. `null` si SL no la tiene poblada.
 - `locked` es el flag de bloqueo por bodega (`Locked` en `ItemWarehouseInfoCollection`).
 - `404` solo si el ítem no existe; bodega sin registro para el ítem devuelve `inStock`/`isCommitted`/`locked` en `0`/`false` (pero `uomCode` sigue resolviendo el valor a nivel ítem).
+- **Códigos con `/`** (ej. `EM109-070-TM/L`): en la URL van codificados como `%2F`
+  (`/items/EM109-070-TM%2FL/stock/LP-MSU`); el middleware los decodifica. Internamente, para esos
+  códigos consulta a Service Layer con `Items?$filter=ItemCode eq '...'` en vez de `Items('...')`,
+  porque el Apache que está delante de SL rechaza las barras codificadas en la ruta con un 404 propio
+  (incidente del 17/09/2026: el stock de esos ítems no llegaba a HITELL). Aplica a todas las lecturas
+  de ítem (`GET /items/{itemCode}`, stock, has-movements y las consultas internas de WEBPOS);
+  `PATCH`/`DELETE /items/{itemCode}` siguen usando la clave en la ruta y no funcionan con `/`.
 
 ---
 

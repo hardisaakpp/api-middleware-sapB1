@@ -505,6 +505,73 @@ public sealed class ItemsControllerTests : IClassFixture<WebApplicationFactory<P
             .TryGetProperty("pvp", out _).Should().BeFalse();
     }
 
+    // Códigos con "/" (EM109-070-TM/L): Items('EM109-070-TM%2FL') lo rechaza el Apache delante de
+    // Service Layer con un 404 propio; el gateway debe ir por Items?$filter=ItemCode eq '...'.
+    [Fact]
+    public async Task GetStock_ItemCodeWithSlash_QueriesByFilterInsteadOfKeyInPath()
+    {
+        const string filterJson = """
+            {
+                "value": [
+                    {
+                        "ItemCode": "EM109-070-TM/L",
+                        "InventoryUOM": "UN",
+                        "ItemWarehouseInfoCollection": [
+                            { "WarehouseCode": "LP-MSU", "InStock": 7.0, "Committed": 1.0, "Locked": "tNO" }
+                        ]
+                    }
+                ]
+            }
+            """;
+        var fake = new ScriptedSapClient(url =>
+            url.StartsWith("Items?$filter=", StringComparison.Ordinal)
+                ? filterJson
+                : throw new SapException(HttpStatusCode.NotFound, "Apache: The requested URL /b1s/v1/Items('EM109-070-TM/L') was not found on this server."));
+        var client = CreateClient(fake);
+
+        var response = await client.GetAsync("/api/v1/items/EM109-070-TM%2FL/stock/LP-MSU");
+
+        var text = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, "body: {0}; SAP urls: {1}", text, string.Join(" | ", fake.Urls));
+        using var body = JsonDocument.Parse(text);
+        body.RootElement.GetProperty("itemCode").GetString().Should().Be("EM109-070-TM/L");
+        body.RootElement.GetProperty("inStock").GetDecimal().Should().Be(7.0m);
+        body.RootElement.GetProperty("isCommitted").GetDecimal().Should().Be(1.0m);
+
+        fake.Urls.Should().NotContain(u => u.StartsWith("Items('", StringComparison.Ordinal),
+            "a code with '/' must never go in the URL path (Apache rejects %2F)");
+        var filterUrl = fake.Urls.Single(u => u.StartsWith("Items?$filter=", StringComparison.Ordinal));
+        filterUrl.Should().Contain("ItemCode%20eq%20%27EM109-070-TM%2FL%27");
+        filterUrl.Should().Contain("$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection");
+    }
+
+    [Fact]
+    public async Task GetStock_ItemCodeWithSlash_EmptyFilterResult_BehavesAsNotFound()
+    {
+        var fake = new ScriptedSapClient(_ => """{ "value": [] }""");
+        var client = CreateClient(fake);
+
+        var response = await client.GetAsync("/api/v1/items/EM109-070-TM%2FL/stock/LP-MSU");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task GetStock_ItemCodeWithoutSlash_KeepsKeyInPath()
+    {
+        const string stockJson = """
+            { "ItemCode": "R215.810.NO", "InventoryUOM": "UN", "ItemWarehouseInfoCollection": [ { "WarehouseCode": "RL-CD", "InStock": 1.0, "Committed": 0.0, "Locked": "tNO" } ] }
+            """;
+        var fake = new ScriptedSapClient(_ => stockJson);
+        var client = CreateClient(fake);
+
+        var response = await client.GetAsync("/api/v1/items/R215.810.NO/stock/RL-CD");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        fake.Urls.Should().Contain(u => u.StartsWith("Items('R215.810.NO')", StringComparison.Ordinal));
+        fake.Urls.Should().NotContain(u => u.StartsWith("Items?$filter=", StringComparison.Ordinal));
+    }
+
     private sealed class ScriptedSapClient : ISapServiceLayerClient
     {
         private readonly Func<string, string> _responder;

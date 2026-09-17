@@ -1255,20 +1255,17 @@ internal sealed class SapGateway : ISapGateway
     public async Task<ItemResponse?> GetItemAsync(string itemCode, CancellationToken ct = default)
     {
         string json;
-        var encoded = Uri.EscapeDataString(itemCode);
         try
         {
             try
             {
-                json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                    $"Items('{encoded}')?$select={ItemSelectFields},U_IXX_PACK,U_MARCA", null, ct);
+                json = await GetItemJsonAsync(itemCode, $"{ItemSelectFields},U_IXX_PACK,U_MARCA", null, null, ct);
             }
             catch (SapException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
             {
                 // Company DBs without the U_IXX_PACK/U_MARCA UDFs reject the $select; retry without them
                 _logger.LogWarning(ex, "SAP rejected $select with U_IXX_PACK/U_MARCA for Item '{ItemCode}'. Retrying without the UDFs.", itemCode);
-                json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                    $"Items('{encoded}')?$select={ItemSelectFields}", null, ct);
+                json = await GetItemJsonAsync(itemCode, ItemSelectFields, null, null, ct);
             }
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -1352,8 +1349,11 @@ internal sealed class SapGateway : ISapGateway
     {
         try
         {
-            var encoded = Uri.EscapeDataString(itemCode);
-            var json = await ExecuteWithRetryOn401Async(HttpMethod.Get, $"Items('{encoded}')/ItemPrices", null, ct);
+            // Con "/" en el código no se puede usar el sub-recurso por clave: se pide el ítem con
+            // $select=ItemPrices, cuyo objeto trae la misma colección "ItemPrices" en la raíz.
+            var json = NeedsFilterLookup(itemCode)
+                ? await GetItemJsonAsync(itemCode, "ItemCode,ItemPrices", null, null, ct)
+                : await ExecuteWithRetryOn401Async(HttpMethod.Get, $"Items('{Uri.EscapeDataString(itemCode)}')/ItemPrices", null, ct);
             using var doc = JsonDocument.Parse(json);
             return ExtractPrecioMinorista(doc.RootElement);
         }
@@ -1528,11 +1528,9 @@ internal sealed class SapGateway : ISapGateway
         string json;
         try
         {
-            var encoded = Uri.EscapeDataString(itemCode);
             // Fetch the item with its per-warehouse collection and filter in-memory; // NOSONAR
             // SAP SL does not support $filter inside nested collections via OData.
-            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items('{encoded}')?$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, companyDb, password, ct);
+            json = await GetItemJsonAsync(itemCode, "ItemCode,InventoryUOM,ItemWarehouseInfoCollection", companyDb, password, ct);
         }
         catch (SapException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -1616,9 +1614,7 @@ internal sealed class SapGateway : ISapGateway
         string json;
         try
         {
-            var encoded = Uri.EscapeDataString(itemCode);
-            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items('{encoded}')?$select=ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, ct);
+            json = await GetItemJsonAsync(itemCode, "ItemCode,InventoryUOM,ItemWarehouseInfoCollection", null, null, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -1877,10 +1873,7 @@ internal sealed class SapGateway : ISapGateway
         string json;
         try
         {
-            var encoded = Uri.EscapeDataString(itemCode);
-            json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
-                $"Items('{encoded}')?$select=ItemCode,ArTaxCode,U_IXX_MARCA,ItemPrices,ItemBarCodeCollection",
-                null, companyDb, password, ct);
+            json = await GetItemJsonAsync(itemCode, "ItemCode,ArTaxCode,U_IXX_MARCA,ItemPrices,ItemBarCodeCollection", companyDb, password, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -2459,15 +2452,61 @@ internal sealed class SapGateway : ISapGateway
         return priceLists;
     }
 
+    // ---- Lectura de un ítem por código ----
+    // Service Layer identifica al ítem por clave en la ruta: Items('CODE'). Cuando el código lleva
+    // una barra (EM109-070-TM/L) viaja como %2F y el Apache que está delante de SL la rechaza con
+    // un 404 HTML propio (AllowEncodedSlashes Off) sin llegar a SAP; el middleware lo tomaba como
+    // "el ítem no existe" y, por ejemplo, no enviaba su stock a HITELL (transferencia 338705,
+    // 17/09/2026). Para esos códigos se consulta la colección con $filter (la barra va en la
+    // query string, que Apache no toca) y se desenvuelve el único elemento. El resto sigue por la
+    // ruta directa, que es más barata. PATCH/DELETE no tienen equivalente con $filter.
+    private static bool NeedsFilterLookup(string itemCode) => itemCode.Contains('/');
+
+    private static string ItemsByCodeFilterResource(string itemCode, string select)
+    {
+        var filter = Uri.EscapeDataString($"ItemCode eq '{itemCode.Replace("'", "''")}'");
+        return $"Items?$filter={filter}&$select={select}";
+    }
+
+    /// <summary>
+    /// JSON del ítem con los campos de <paramref name="select"/>, sea por clave en la ruta o por $filter
+    /// (códigos con "/"). En ambos casos el resultado es el objeto del ítem; si no existe lanza el mismo
+    /// <see cref="SapException"/> 404 que devuelve SL por clave, así los llamadores no cambian.
+    /// </summary>
+    private async Task<string> GetItemJsonAsync(string itemCode, string select, string? companyDb, string? password, CancellationToken ct)
+    {
+        if (!NeedsFilterLookup(itemCode))
+        {
+            return await ExecuteWithRetryOn401Async(HttpMethod.Get,
+                $"Items('{Uri.EscapeDataString(itemCode)}')?$select={select}", null, companyDb, password, ct);
+        }
+
+        var json = await ExecuteWithRetryOn401Async(HttpMethod.Get,
+            ItemsByCodeFilterResource(itemCode, select), null, companyDb, password, ct);
+        return UnwrapSingleItem(json, itemCode);
+    }
+
+    private static string UnwrapSingleItem(string json, string itemCode)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.TryGetProperty(ValueProperty, out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in arr.EnumerateArray())
+            {
+                return element.GetRawText();
+            }
+        }
+
+        throw new SapException(HttpStatusCode.NotFound, $"Item '{itemCode}' not found (lookup by $filter)");
+    }
+
     public async Task<bool> HasItemMovementsAsync(string itemCode, CancellationToken ct = default)
     {
-        var resource = $"Items('{Uri.EscapeDataString(itemCode)}')?$select=" +
-            "ItemCode,QuantityOnStock,QuantityOrderedFromVendors,QuantityOrderedByCustomers";
-
         string json;
         try
         {
-            json = await ExecuteWithRetryOn401Async(HttpMethod.Get, resource, null, ct);
+            json = await GetItemJsonAsync(itemCode,
+                "ItemCode,QuantityOnStock,QuantityOrderedFromVendors,QuantityOrderedByCustomers", null, null, ct);
         }
         catch (SapException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
