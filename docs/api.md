@@ -641,6 +641,7 @@ dentro del mismo POST** — el cliente sigue llamando una sola vez. Después de 
 | `Synced` | WEBPOS aceptó la actualización de stock |
 | `SkippedNotPos` | Ninguno de los dos almacenes está habilitado para WEBPOS — no se llamó a WEBPOS |
 | `Rejected` | WEBPOS rechazó por una razón de negocio (`procesoCorrecto:false`, en cualquier HTTP status — WEBPOS usa tanto 200 como 400 para rechazos). `reason` trae el `mensaje` crudo de WEBPOS. **No se reintenta solo** — requiere corrección manual en WEBPOS y un reintento explícito (ver abajo) |
+| `Rejected` (sin stock en SAP) | El middleware **no llamó a WEBPOS** para ese ítem porque SAP no devolvió su stock en alguna bodega (ítem no encontrado, p. ej. el 404 de Apache con códigos con `/`). `reason` = `ITEM (negocio): sin stock en SAP para BODEGA; no se envió a WEBPOS (0 no es un valor válido), reintentar`. Antes del 17/09/2026 se enviaba `0` y la tienda quedaba en cero. Se resuelve con el endpoint retry una vez que SAP responde |
 | `Queued` | WEBPOS no respondió a tiempo o está saturado — se encoló como job independiente (mismo mecanismo de `docs/job-queue.md`, 5 intentos con backoff). `jobId` permite consultar `GET /jobs/{jobId}` |
 | `Error` | Cualquier otro fallo notificando a WEBPOS. La transferencia en SAP **ya quedó creada** — este campo nunca hace fallar el `201` de la transferencia |
 
@@ -681,7 +682,7 @@ Cada notificación (creación o retry, transferencia o entrada) deja su resultad
 |---|---|
 | `SYNCED` | **Integrado** — HITELL aceptó la actualización de stock |
 | `SKIPPED_NOT_POS` | **No corresponde integración** — ninguna bodega del documento está habilitada para WEBPOS |
-| `REJECTED` | **Rechazado** — HITELL rechazó (típicamente producto no creado/migrado); `reason` trae el mensaje. Corregir en HITELL y reintegrar con el endpoint retry hasta llegar a `SYNCED`/`SKIPPED_NOT_POS` |
+| `REJECTED` | **Rechazado** — HITELL rechazó (típicamente producto no creado/migrado); `reason` trae el mensaje. Corregir en HITELL y reintegrar con el endpoint retry hasta llegar a `SYNCED`/`SKIPPED_NOT_POS`. También queda `REJECTED` cuando SAP no devolvió el stock de un ítem: en ese caso no se envió nada a HITELL para ese ítem (nunca `0`) y basta reintegrar con retry |
 | `ERROR` | **Error de envío** — la notificación nunca llegó a HITELL (WEBPOS caído, login fallido, `WebPos:BaseUrl` mal configurada, timeout). No es un rechazo: `reason` trae el error técnico. Reintegrar con el endpoint retry cuando la causa esté resuelta |
 
 `attempts` cuenta las veces que se intentó la integración del documento; `doc_num` es el número
@@ -1058,6 +1059,13 @@ Stock del artículo en una bodega.
   como código legible. `null` si SL no la tiene poblada.
 - `locked` es el flag de bloqueo por bodega (`Locked` en `ItemWarehouseInfoCollection`).
 - `404` solo si el ítem no existe; bodega sin registro para el ítem devuelve `inStock`/`isCommitted`/`locked` en `0`/`false` (pero `uomCode` sigue resolviendo el valor a nivel ítem).
+- **Códigos con `/`** (ej. `EM109-070-TM/L`): en la URL van codificados como `%2F`
+  (`/items/EM109-070-TM%2FL/stock/LP-MSU`); el middleware los decodifica. Internamente, para esos
+  códigos consulta a Service Layer con `Items?$filter=ItemCode eq '...'` en vez de `Items('...')`,
+  porque el Apache que está delante de SL rechaza las barras codificadas en la ruta con un 404 propio
+  (incidente del 17/09/2026: el stock de esos ítems no llegaba a HITELL). Aplica a todas las lecturas
+  de ítem (`GET /items/{itemCode}`, stock, has-movements y las consultas internas de WEBPOS);
+  `PATCH`/`DELETE /items/{itemCode}` siguen usando la clave en la ruta y no funcionan con `/`.
 
 ---
 

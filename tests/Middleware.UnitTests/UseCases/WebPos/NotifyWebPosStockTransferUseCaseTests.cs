@@ -86,6 +86,36 @@ public sealed class NotifyWebPosStockTransferUseCaseTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_SapHasNoStockReadingForAWarehouse_DoesNotCallWebPosAndReportsRejection()
+    {
+        _sapGatewayMock
+            .Setup(g => g.GetWarehousesPosInfoForTestCompanyAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, WarehousePosInfo>
+            {
+                ["WH01"] = new WarehousePosInfo("WH01", IsPosEnabled: true, CodBusiness: "1"),
+                ["WH02"] = new WarehousePosInfo("WH02", IsPosEnabled: true, CodBusiness: "1")
+            });
+
+        // WH01 sí lee; WH02 devuelve null (p. ej. el 404 de Apache con códigos con "/").
+        _sapGatewayMock
+            .Setup(g => g.GetItemStockForTestCompanyAsync("ITEM001", "WH01", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ItemStockResponse("ITEM001", "WH01", 3m, 0m, "UNIDAD", false));
+        _sapGatewayMock
+            .Setup(g => g.GetItemStockForTestCompanyAsync("ITEM001", "WH02", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ItemStockResponse?)null);
+
+        var result = await _sut.ExecuteAsync(Request());
+
+        result.Status.Should().Be(WebPosSyncStatus.Rejected);
+        result.Reason.Should().Contain("ITEM001").And.Contain("WH02").And.Contain("no se envió a WEBPOS");
+        // Nunca se manda 0 en lugar de un stock que no se pudo leer.
+        _webPosGatewayMock.Verify(
+            g => g.UpdateInventoryAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("ST", 42, It.IsAny<int?>(), "REJECTED", It.Is<string>(m => m.Contains("WH02")), It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_WarehousesBelongToDifferentBusinesses_SendsTwoSeparateCalls()
     {
         _sapGatewayMock

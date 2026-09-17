@@ -4,6 +4,7 @@ using Asp.Versioning;
 using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using Middleware.Api.Filters;
 using Middleware.Application.Abstractions;
 using Middleware.Application.Dtos.Requests;
 using Middleware.Application.Dtos.Responses;
@@ -17,6 +18,7 @@ namespace Middleware.Api.Controllers.V1;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/items")]
+[DecodeItemCodeRoute] // códigos con "/" llegan como %2F en la ruta; ver el atributo
 public sealed class ItemsController : ControllerBase // NOSONAR
 {
     private readonly IJobExecutionCoordinator _jobCoordinator;
