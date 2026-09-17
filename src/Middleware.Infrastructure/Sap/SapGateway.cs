@@ -2489,12 +2489,12 @@ internal sealed class SapGateway : ISapGateway
     private static string UnwrapSingleItem(string json, string itemCode)
     {
         using var doc = JsonDocument.Parse(json);
-        if (doc.RootElement.TryGetProperty(ValueProperty, out var arr) && arr.ValueKind == JsonValueKind.Array)
+        if (doc.RootElement.TryGetProperty(ValueProperty, out var arr)
+            && arr.ValueKind == JsonValueKind.Array
+            && arr.GetArrayLength() > 0)
         {
-            foreach (var element in arr.EnumerateArray())
-            {
-                return element.GetRawText();
-            }
+            // ItemCode es clave única: la colección trae 0 o 1 elemento.
+            return arr[0].GetRawText();
         }
 
         throw new SapException(HttpStatusCode.NotFound, $"Item '{itemCode}' not found (lookup by $filter)");
