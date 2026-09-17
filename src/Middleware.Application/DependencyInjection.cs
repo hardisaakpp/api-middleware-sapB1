@@ -47,6 +47,7 @@ public static class DependencyInjection
         services.AddScoped<GetPurchaseOrderUseCase>();
         services.AddScoped<GetPurchaseOrderByDocNumUseCase>();
         services.AddScoped<GetPurchaseOrdersUseCase>();
+        services.AddScoped<GetPurchaseOrdersPendientesUseCase>();
         services.AddScoped<UpdatePurchaseOrderUseCase>();
         services.AddScoped<UpdatePurchaseOrderStatusUseCase>();
         services.AddScoped<GetItemUseCase>();

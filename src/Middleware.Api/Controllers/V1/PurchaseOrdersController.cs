@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Asp.Versioning;
+using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Middleware.Application.Abstractions;
@@ -121,6 +122,50 @@ public sealed class PurchaseOrdersController : ControllerBase // NOSONAR
         {
             JobCompleted<PurchaseOrderResponse?> c => c.Response is null ? NotFound() : Ok(c.Response),
             JobQueued<PurchaseOrderResponse?> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    [HttpGet("pendientes")]
+    [ProducesResponseType(typeof(IReadOnlyList<PurchaseOrderResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetPendientes(
+        [FromQuery] DateTime desde,
+        [FromQuery] DateTime hasta,
+        [FromQuery] string warehouseCodes,
+        [FromServices] IValidator<GetPurchaseOrdersPendientesRequest> validator,
+        CancellationToken cancellationToken = default)
+    {
+        var codigos = (warehouseCodes ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var request = new GetPurchaseOrdersPendientesRequest(desde, hasta, codigos);
+        var validation = await validator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            foreach (var failure in validation.Errors)
+            {
+                ModelState.AddModelError(failure.PropertyName, failure.ErrorMessage);
+            }
+
+            return ValidationProblem(ModelState);
+        }
+
+        var payloadJson = JsonSerializer.Serialize(request);
+
+        var outcome = await _jobCoordinator.ExecuteAsync(
+            "GetPurchaseOrdersPendientes",
+            $"GET /api/v1/purchase-orders/pendientes?desde={desde:yyyy-MM-dd}&hasta={hasta:yyyy-MM-dd}&warehouseCodes={warehouseCodes}",
+            payloadJson,
+            (sp, ct) => sp.GetRequiredService<GetPurchaseOrdersPendientesUseCase>().ExecuteAsync(request, ct),
+            (int)HttpStatusCode.OK,
+            cancellationToken);
+
+        return outcome switch
+        {
+            JobCompleted<IReadOnlyList<PurchaseOrderResponse>> c => Ok(c.Response),
+            JobQueued<IReadOnlyList<PurchaseOrderResponse>> q => Accepted(new { jobId = q.JobId, status = JobStatuses.Encolado }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
