@@ -83,6 +83,28 @@ public sealed class NotifyWebPosGoodsReceiptUseCaseTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_SapHasNoStockReading_DoesNotCallWebPosAndReportsRejection()
+    {
+        SetupPosInfo(new Dictionary<string, WarehousePosInfo>
+        {
+            ["WH01"] = new WarehousePosInfo("WH01", IsPosEnabled: true, CodBusiness: "1")
+        });
+
+        _sapGatewayMock
+            .Setup(g => g.GetItemStockAsync("ITEM001", "WH01", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ItemStockResponse?)null);
+
+        var result = await _sut.ExecuteAsync(Request());
+
+        result.Status.Should().Be(WebPosSyncStatus.Rejected);
+        result.Reason.Should().Contain("ITEM001").And.Contain("WH01").And.Contain("no se envió a WEBPOS");
+        _webPosGatewayMock.Verify(
+            g => g.UpdateInventoryAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<WebPosStoreStock>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _posSyncStatusRepositoryMock.Verify(r => r.UpsertAsync("GR", 55, It.IsAny<int?>(), "REJECTED", It.Is<string>(m => m.Contains("WH01")), It.IsAny<IReadOnlyCollection<PosSyncWarehouse>>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_MixedLines_OnlyPosWarehousesAreNotified()
     {
         SetupPosInfo(new Dictionary<string, WarehousePosInfo>

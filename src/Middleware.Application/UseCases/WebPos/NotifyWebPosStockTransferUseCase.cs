@@ -94,7 +94,19 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
     private async Task<string?> NotifyItemForBusinessAsync(
         int docEntry, string itemCode, string codBusiness, IEnumerable<WarehousePosInfo> warehouses, CancellationToken cancellationToken)
     {
-        var storeStock = await BuildStoreStockAsync(itemCode, warehouses, cancellationToken);
+        var (storeStock, missingWarehouses) = await BuildStoreStockAsync(itemCode, warehouses, cancellationToken);
+        if (missingWarehouses.Count > 0)
+        {
+            // Sin lectura de stock NO se envía nada: el ítem viene de un documento SAP, así que
+            // "no encontrado" es un problema de lectura (p. ej. el 404 de Apache con códigos con "/"),
+            // no un stock real. Antes se enviaba 0 y la tienda quedaba en cero (17/09/2026).
+            var missing = string.Join(", ", missingWarehouses);
+            _logger.LogWarning(
+                "DocEntry={DocEntry}: sin stock en SAP para {ItemCode} en {Warehouses} — no se envía a WEBPOS ({CodBusiness}); reintentar",
+                docEntry, itemCode, missing, codBusiness);
+            return $"{itemCode} ({codBusiness}): sin stock en SAP para {missing}; no se envió a WEBPOS (0 no es un valor válido), reintentar";
+        }
+
         var outcome = await _webPosGateway.UpdateInventoryAsync(codBusiness, itemCode, storeStock, cancellationToken);
 
         if (!outcome.Success && IsProductNotFoundRejection(outcome.RejectionReason))
@@ -105,17 +117,29 @@ public sealed class NotifyWebPosStockTransferUseCase : IUseCase<NotifyWebPosStoc
         return outcome.Success ? null : $"{itemCode} ({codBusiness}): {outcome.RejectionReason}";
     }
 
-    private async Task<List<WebPosStoreStock>> BuildStoreStockAsync(
+    /// <summary>
+    /// Stock absoluto por bodega leído de SAP. Una bodega sin lectura (ítem no encontrado) va en
+    /// <c>MissingWarehouses</c> y el llamador no envía nada a WEBPOS: cero no es un valor válido
+    /// cuando la lectura falló.
+    /// </summary>
+    private async Task<(List<WebPosStoreStock> StoreStock, List<string> MissingWarehouses)> BuildStoreStockAsync(
         string itemCode, IEnumerable<WarehousePosInfo> warehouses, CancellationToken cancellationToken)
     {
         var storeStock = new List<WebPosStoreStock>();
+        var missing = new List<string>();
         foreach (var warehouseCode in warehouses.Select(w => w.WarehouseCode))
         {
             var stock = await _sapGateway.GetItemStockForTestCompanyAsync(itemCode, warehouseCode, cancellationToken);
-            storeStock.Add(new WebPosStoreStock(warehouseCode, stock?.InStock ?? 0m));
+            if (stock is null)
+            {
+                missing.Add(warehouseCode);
+                continue;
+            }
+
+            storeStock.Add(new WebPosStoreStock(warehouseCode, stock.InStock));
         }
 
-        return storeStock;
+        return (storeStock, missing);
     }
 
     private static bool IsProductNotFoundRejection(string? reason) =>
